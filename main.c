@@ -18,6 +18,7 @@
 struct fb_params {
 	size_t pitch;
 	size_t size;
+	uint32_t w, h;
 	uint8_t * restrict map;
 	uint32_t fb;
 };
@@ -37,7 +38,7 @@ struct plane_prop_ids {
 
 struct plane {
 	int id;
-	int src_w, src_h;
+	struct fb_params *curr_fb;
 	struct plane_prop_ids pid;
 };
 
@@ -70,13 +71,11 @@ static int cmp_prop_info(const void *arg1, const void *arg2) {
 }
 
 static struct fb_params fbp[2];
-static struct fb_params cfbp;
-static bool back_ready = false, flip_in_progress = false;
 static int curr_fb = 0;
 static drmModeCrtcPtr use_crtc;
 static int color = 255;
 static uint32_t x, y;
-static struct plane cursor_plane = {0};
+static struct plane cursor_plane, primary_plane;
 
 #if 0
 int uterm_drm_video_find_crtc(drmModeRes *res, drmModeEncoder *enc) {
@@ -103,56 +102,119 @@ void close_restricted(int fd, void *ud) {
 	close(fd);
 }
 
-void swap(int fd);
+static inline drmModeAtomicReqPtr atomic_begin(void) {
+	return drmModeAtomicAlloc();
+}
 
-static inline void atomic_add(drmModeAtomicReq *r, uint32_t id, uint32_t prop, uint64_t val) {
+static inline void atomic_add(drmModeAtomicReqPtr r, uint32_t id, uint32_t prop, uint64_t val) {
 	drmModeAtomicAddProperty(r, id, prop, val);
 }
-static void setup_cursor(int fd) {
-#if 0
-	auto atomic = drmModeAtomicAlloc();
-	assert(atomic);
 
-	uint32_t id = cursor_plane.id;
-	auto props = &cursor_plane.pid;
+static inline int atomic_check(drmModeAtomicReqPtr atomic, int fd) {
+	uint32_t flags = DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_NONBLOCK;
+	return drmModeAtomicCommit(fd, atomic, flags, NULL);
+}
+static inline int atomic_commit(drmModeAtomicReqPtr atomic, int fd) {
+	uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
+	int ret = drmModeAtomicCommit(fd, atomic, flags, NULL);
+	drmModeAtomicFree(atomic);
+	return ret;
+}
+static void setup_plane(drmModeAtomicReqPtr atomic, int fd, struct plane *pl, uint32_t xx, uint32_t yy) {
+	uint32_t id = pl->id;
+	auto props = &pl->pid;
+	auto src_w = pl->curr_fb->w;
+	auto src_h = pl->curr_fb->h;
 	atomic_add(atomic, id, props->src_x, 0);
 	atomic_add(atomic, id, props->src_y, 0);
-	atomic_add(atomic, id, props->src_w, cursor_plane.src_w << 16);
-	atomic_add(atomic, id, props->src_h, cursor_plane.src_h << 16);
-	atomic_add(atomic, id, props->crtc_w, cursor_plane.src_w);
-	atomic_add(atomic, id, props->crtc_h, cursor_plane.src_h);
-	atomic_add(atomic, id, props->fb_id, cfbp.fb);
+	atomic_add(atomic, id, props->src_w, src_w << 16);
+	atomic_add(atomic, id, props->src_h, src_h << 16);
+	atomic_add(atomic, id, props->crtc_w, src_w);
+	atomic_add(atomic, id, props->crtc_h, src_h);
+	atomic_add(atomic, id, props->fb_id, pl->curr_fb->fb);
 	atomic_add(atomic, id, props->crtc_id, use_crtc->crtc_id);
-	atomic_add(atomic, id, props->crtc_x, x);
-	atomic_add(atomic, id, props->crtc_y, y);
-	int ret = drmModeAtomicCommit(fd, atomic, 0, NULL);
-	assert(!ret);
-	drmModeAtomicFree(atomic);
-#endif
-	drmModeSetPlane(fd, cursor_plane.id, use_crtc->crtc_id, cfbp.fb, 0, x, y, cursor_plane.src_w, cursor_plane.src_h, 0, 0, cursor_plane.src_w<<16, cursor_plane.src_h<<16);
+	atomic_add(atomic, id, props->crtc_x, xx);
+	atomic_add(atomic, id, props->crtc_y, yy);
+	assert(!atomic_check(atomic, fd));
 }
 
-static void update_cursor(int fd) {
-#if 0
-	auto atomic = drmModeAtomicAlloc();
-	assert(atomic);
-	uint32_t id = cursor_plane.id;
-	auto props = &cursor_plane.pid;
+void swap(drmModeAtomicReqPtr atomic, int fd, struct plane *primary) {
+	primary->curr_fb = &fbp[curr_fb^1];
+	atomic_add(atomic, primary->id, primary->pid.fb_id, primary->curr_fb->fb);
+	curr_fb ^= 1;
+
+	assert(!atomic_check(atomic, fd));
+}
+
+static void update_cursor(drmModeAtomicReqPtr atomic, int fd, struct plane *cursor) {
+	uint32_t id = cursor->id;
+	auto props = &cursor->pid;
 	atomic_add(atomic, id, props->crtc_x, x);
 	atomic_add(atomic, id, props->crtc_y, y);
-	int ret = drmModeAtomicCommit(fd, atomic, 0, NULL);
-	assert(!ret);
-	drmModeAtomicFree(atomic);
-#endif
-	setup_cursor(fd);
+	assert(!atomic_check(atomic, fd));
+}
+
+static void init_plane_props(int fd, struct plane *p) {
+	auto ps = drmModeObjectGetProperties(fd, p->id, DRM_MODE_OBJECT_PLANE);
+	assert(ps);
+	for (uint32_t i = 0; i < ps->count_props; i++) {
+		auto prop = drmModeGetProperty(fd, ps->props[i]);
+		struct prop_info *pi = bsearch(prop->name, plane_info,
+		    ARR_LEN(plane_info), sizeof(plane_info[0]), cmp_prop_info);
+		if (!pi) {
+			fprintf(stderr, "unknow prop %s\n", prop->name);
+			continue;
+		}
+		*(uint32_t*)(((char*)&p->pid)+pi->offset) = prop->prop_id;
+		drmModeFreeProperty(prop);
+	}
+	drmModeFreeObjectProperties(ps);
+}
+
+#define gen_prop_getter(name) \
+static inline uint64_t get_plane_##name(struct plane *pl, drmModeObjectPropertiesPtr props) { \
+	for (uint32_t i = 0; i < props->count_props; i++) { \
+		if (props->props[i] == pl->pid.name) { \
+			fprintf(stderr, "plane "#name": %lu\n", props->prop_values[i]); \
+			return props->prop_values[i]; \
+		} \
+	} \
+	assert(false); \
+} \
+
+gen_prop_getter(crtc_id)
+gen_prop_getter(type)
+
+static struct plane find_plane_by_type(drmModePlaneResPtr pres, int fd, uint64_t wtype) {
+	for (size_t i = 0; i < pres->count_planes; i++) {
+		auto pl = drmModeGetPlane(fd, pres->planes[i]);
+		auto props = drmModeObjectGetProperties(fd, pl->plane_id, DRM_MODE_OBJECT_ANY);
+		assert(props);
+		struct plane p;
+		p.id = pl->plane_id;
+		init_plane_props(fd, &p);
+
+		//auto crtc_id = get_plane_crtc_id(&p, props);
+		auto type = get_plane_type(&p, props);
+		drmModeFreeObjectProperties(props);
+		drmModeFreePlane(pl);
+		//if (wtype == 1 && crtc_id == use_crtc->crtc_id)
+		//	continue;
+		if (type == wtype) {
+			fprintf(stderr, "returning\n");
+			return p;
+		}
+	}
+	assert(false);
 }
 
 void page_flip_cb(int fd, unsigned int seq, unsigned int sec, unsigned int usec, void *ud) {
-	flip_in_progress = false;
-	if (back_ready) {
-		update_cursor(fd);
-		swap(fd);
-	}
+	auto atomic = atomic_begin();
+	update_cursor(atomic, fd, &cursor_plane);
+	swap(atomic, fd, &primary_plane);
+	int ret = atomic_commit(atomic, fd);
+	assert(!ret);
+
 	uint8_t *map = __builtin_assume_aligned(fbp[curr_fb^1].map, 16);
 	int tmp = color > 0 ? color : -color;
 	for (size_t i = 0; i < fbp[0].size/4; i++) {
@@ -164,15 +226,6 @@ void page_flip_cb(int fd, unsigned int seq, unsigned int sec, unsigned int usec,
 	color--;
 	if (color <= -256)
 		color = 255;
-	back_ready = true;
-}
-
-void swap(int fd) {
-	int ret = drmModePageFlip(fd, use_crtc->crtc_id, fbp[curr_fb^1].fb, DRM_MODE_PAGE_FLIP_EVENT, NULL);
-	assert(!ret);
-	curr_fb ^= 1;
-	back_ready = false;
-	flip_in_progress = true;
 }
 
 void drm_cb(EV_P_ ev_io *w, int revent) {
@@ -199,6 +252,7 @@ void input_cb(EV_P_ ev_io *_w, int revent) {
 	struct libinput_event *ev;
 	while ((ev = libinput_get_event(w->libinput))) {
 		if (libinput_event_get_type(ev) == LIBINPUT_EVENT_DEVICE_ADDED) {
+			fprintf(stderr, "new device\n");
 			auto dev = libinput_event_get_device(ev);
 			if (libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_KEYBOARD) ||
 			    libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_POINTER))
@@ -210,18 +264,18 @@ void input_cb(EV_P_ ev_io *_w, int revent) {
 			x = clamped_add(x, libinput_event_pointer_get_dx(pt), use_crtc->width);
 			y = clamped_add(y, libinput_event_pointer_get_dy(pt), use_crtc->height);
 			//update_cursor(w->drm_fd);
-			//fprintf(stderr, "pointer %d %d\n", x, y);
+			fprintf(stderr, "pointer %d %d\n", x, y);
 		} else if (libinput_event_get_type(ev) == LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE) {
 			auto pt = libinput_event_get_pointer_event(ev);
 			x = libinput_event_pointer_get_absolute_x(pt);
 			y = libinput_event_pointer_get_absolute_y(pt);
 			//update_cursor(w->drm_fd);
-			//fprintf(stderr, "pointer %d %d\n", x, y);
+			fprintf(stderr, "pointer %d %d\n", x, y);
 		}
 	}
 }
 
-void init_fb(int fd, int w, int h, struct fb_params *p) {
+void init_fb(int fd, int w, int h, int depth, struct fb_params *p) {
 	struct drm_mode_create_dumb create_req = {0};
 	create_req.width = w;
 	create_req.height = h;
@@ -230,7 +284,7 @@ void init_fb(int fd, int w, int h, struct fb_params *p) {
 	assert(ret >= 0);
 	printf("Created dumb: pitch: %d, handle: %d, size: %llu\n", create_req.pitch, create_req.handle, create_req.size);
 
-	ret = drmModeAddFB(fd, w, h, 24, 32, create_req.pitch, create_req.handle, &p->fb);
+	ret = drmModeAddFB(fd, w, h, depth, 32, create_req.pitch, create_req.handle, &p->fb);
 	assert(!ret);
 
 	struct drm_mode_map_dumb map_req = {0};
@@ -247,29 +301,17 @@ void init_fb(int fd, int w, int h, struct fb_params *p) {
 
 	p->pitch = create_req.pitch;
 	p->size = create_req.size;
-}
-
-static void init_plane_props(int fd, struct plane *p) {
-	auto ps = drmModeObjectGetProperties(fd, p->id, DRM_MODE_OBJECT_PLANE);
-	assert(ps);
-	for (uint32_t i = 0; i < ps->count_props; i++) {
-		auto prop = drmModeGetProperty(fd, ps->props[i]);
-		struct prop_info *pi = bsearch(prop->name, plane_info,
-		    ARR_LEN(plane_info), sizeof(plane_info[0]), cmp_prop_info);
-		if (!pi) {
-			fprintf(stderr, "unknow prop %s\n", prop->name);
-			continue;
-		}
-		*(uint32_t*)(((char*)&p->pid)+pi->offset) = prop->prop_id;
-		drmModeFreeProperty(prop);
-	}
-	drmModeFreeObjectProperties(ps);
+	p->w = w;
+	p->h = h;
 }
 
 int main() {
 	int fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
 	drmDropMaster(fd);
 	drmSetMaster(fd);
+
+	int ret = drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1);
+	assert(!ret);
 
 	auto u = udev_new();
 	auto li = libinput_udev_create_context(
@@ -301,10 +343,11 @@ int main() {
 	}
 	drmModeFreeResources(r);
 
+	fprintf(stderr, "crtc: %d\n", use_crtc->crtc_id);
 	x = use_crtc->width/2;
 	y = use_crtc->height/2;
-	init_fb(fd, use_crtc->width, use_crtc->height, fbp);
-	init_fb(fd, use_crtc->width, use_crtc->height, fbp+1);
+	init_fb(fd, use_crtc->width, use_crtc->height, 24, fbp);
+	init_fb(fd, use_crtc->width, use_crtc->height, 24, fbp+1);
 
 	uint8_t *map = fbp[0].map;
 	for (size_t i = 0; i < fbp[0].size/4; i++) {
@@ -321,61 +364,36 @@ int main() {
 		map[i*4+2] = 0;
 		map[i*4+3] = 0;
 	}
-	back_ready = true;
 	color = 253;
 
-	// create a plane for cursor
 	auto pres = drmModeGetPlaneResources(fd);
-	for (size_t i = 0; i < pres->count_planes; i++) {
-		auto pl = drmModeGetPlane(fd, pres->planes[i]);
-		auto props = drmModeObjectGetProperties(fd, pl->plane_id, DRM_MODE_OBJECT_ANY);
-		assert(props);
-		struct plane p;
-		p.id = pl->plane_id;
-		init_plane_props(fd, &p);
-		fprintf(stderr, "type prop id: %u\n", p.pid.type);
+	cursor_plane = find_plane_by_type(pres, fd, 2);
+	primary_plane = find_plane_by_type(pres, fd, 1);
 
-		uint64_t type = 1024;
-		for (uint32_t i = 0; i < props->count_props; i++) {
-			if (props->props[i] == p.pid.type) {
-				fprintf(stderr, "plane type: %lu\n", props->prop_values[i]);
-				type = props->prop_values[i];
-				goto found_type;
-			}
-		}
-		drmModeFreeObjectProperties(props);
-		drmModeFreePlane(pl);
-		continue;
-found_type:
-		drmModeFreeObjectProperties(props);
-		drmModeFreePlane(pl);
-		if (type == DRM_PLANE_TYPE_CURSOR || type == DRM_PLANE_TYPE_OVERLAY) {
-			cursor_plane = p;
-			goto cursor_ok;
-		}
-	}
-	fprintf(stderr, "cursor plane not found");
-	assert(false);
-cursor_ok:;
 	uint64_t cw, ch;
-	int ret = drmGetCap(fd, DRM_CAP_CURSOR_WIDTH, &cw);
+	ret = drmGetCap(fd, DRM_CAP_CURSOR_WIDTH, &cw);
 	cw = ret ? 64 : cw;
 	ret = drmGetCap(fd, DRM_CAP_CURSOR_HEIGHT, &ch);
 	ch = ret ? 64 : ch;
 
-	init_fb(fd, cw, ch, &cfbp);
-	map = cfbp.map;
-	cursor_plane.src_w = cw;
-	cursor_plane.src_h = ch;
-	for (size_t i = 0; i < cfbp.size/4; i++) {
+	struct fb_params *cfbp = malloc(sizeof(*cfbp));
+	init_fb(fd, cw, ch, 32, cfbp);
+	map = cfbp->map;
+	for (size_t i = 0; i < cfbp->size/4; i++) {
 		map[i*4] = 0;
 		map[i*4+1] = 0;
 		map[i*4+2] = 255;
-		map[i*4+3] = 0;
+		map[i*4+3] = 255;
 	}
 
-	setup_cursor(fd);
-	ret = drmModePageFlip(fd, use_crtc->crtc_id, fbp[0].fb, DRM_MODE_PAGE_FLIP_EVENT, NULL);
+	cursor_plane.curr_fb = cfbp;
+	primary_plane.curr_fb = &fbp[curr_fb];
+
+	auto atomic = atomic_begin();
+	setup_plane(atomic, fd, &primary_plane, 0, 0);
+	setup_plane(atomic, fd, &cursor_plane, x, y);
+	ret = atomic_commit(atomic, fd);
+	assert(!ret);
 
 	ev_run(EV_DEFAULT, 0);
 
