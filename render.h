@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 // Pixel format is assumed to be XRGB/ARGB8888 (high bytes to low bytes)
 struct fb {
