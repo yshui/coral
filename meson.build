@@ -4,4 +4,6 @@ drm = dependency('libdrm')
 libinput = dependency('libinput')
 udev = dependency('libudev')
 libev = cc.find_library('ev', required: true)
-executable('dm', ['main.c', 'scene.c', 'input.c', 'interpolate.c', 'render.c', 'backend_drm.c'], dependencies: [drm, libinput, udev, libev])
+executable('dm', ['main.c', 'scene.c', 'input.c', 'interpolate.c', 'render.c', 'backend_drm.c'],
+           dependencies: [drm, libinput, udev, libev], c_args: ['-fsanitize=address,undefined'],
+           link_args: '-fsanitize=address,undefined')

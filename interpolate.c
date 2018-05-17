@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <math.h>
 #include "list.h"
@@ -13,6 +14,7 @@ void interpolatable_linear(var *i, struct key_frame *k, double dt) {
 	double d = (k->setpoint-i->last_setpoint)/(k->eta+i->elapsed)*dt;
 	i->changed = true;
 	i->current += d;
+	fprintf(stderr, "curr %lf\n", i->current);
 }
 
 // XXX this won't work with current model
@@ -23,7 +25,7 @@ void interpolatable_step(var *i, struct key_frame *k, double dt) {
 	i->changed = fabs(old-i->current) > 1e-6;
 }
 
-void interpolatable_append_keyframe(var *i, struct key_frame *k) {
+void var_append_keyframe(var *i, struct key_frame *k) {
 	*i->last_key = k;
 	i->last_key = &k->next;
 }
@@ -41,29 +43,35 @@ void interpolatable_truncate(var *i) {
 
 void interpolatable_advance(var *i, double dt) {
 	struct key_frame *new_head = i->keys;
+	fprintf(stderr, "%lf\n", dt);
 
 	// Remove expired frames, set changed to true, update last_setpoint,
 	// reset elapsed
 	double changed = false;
-	while(dt >= new_head->eta) {
-		struct key_frame *next = new_head->next;
+	while(new_head && dt >= new_head->eta) {
 		if (new_head->callback)
-			new_head->callback(i, new_head, true, next->ud);
+			new_head->callback(i, new_head, true, new_head->ud);
 		dt -= new_head->eta;
 		i->last_setpoint = new_head->setpoint;
 		i->current = new_head->setpoint;
 		i->elapsed = 0;
 		changed = true;
+
+		struct key_frame *next = new_head->next;
 		free(new_head);
 		new_head = next;
 	}
 
 	// Call advance on current key frame
 	i->elapsed += dt;
-	if (new_head->advance)
-		new_head->advance(i, new_head, dt);
+	if (new_head) {
+		if (new_head->advance)
+			new_head->advance(i, new_head, dt);
+		new_head->eta -= dt;
+	} else
+		i->last_key = &i->keys;
+
 	i->changed = i->changed || changed;
-	new_head->eta -= dt;
 	i->keys = new_head;
 }
 
@@ -95,8 +103,7 @@ void var_new_linear_key(var *v, double setpoint, double eta, key_cb cb, void *ud
 	k->callback = cb;
 	k->advance = interpolatable_linear;
 	k->ud = ud;
-	*v->last_key = k;
-	v->last_key = &k->next;
+	var_append_keyframe(v, k);
 }
 
 var *new_var(struct interpolate_man *im, double val) {

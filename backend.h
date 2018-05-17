@@ -12,6 +12,11 @@ struct backend {
 	void (*page_flip_cb)(EV_P_ void *user_data);
 };
 
+enum fb_purpose_t {
+	RENDER_FB, // Used for rendering, fast CPU access
+	PAGE_FB    // Used for sending frame to display
+};
+
 struct backend_ops {
 	// Setup the backend, if *w and *h != 0, they are
 	// the requested width and height.
@@ -31,7 +36,7 @@ struct backend_ops {
 	bool (*set_cursor)(struct backend *b, struct fb *fb);
 
 	// Create a fb that's suitable as to be used as a frame
-	struct fb *(*new_fb)(struct backend *b);
+	struct fb *(*new_fb)(struct backend *b, int purpose);
 };
 
 extern const struct backend_ops drm_ops;

@@ -18,7 +18,7 @@ struct object {
 };
 
 struct layer {
-	struct fb cache;
+	struct fb *cache;
 	struct list_head objs;
 };
 
@@ -33,7 +33,7 @@ static inline void blend(struct fb *bottom, struct fb *top) {
 	assert(bottom->width == top->width);
 	assert(bottom->bpp == top->bpp);
 	assert(top->bpp == 4);
-	for (uint32_t i = 0; i < top->pitch*top->height*top->bpp; i += top->bpp) {
+	for (uint32_t i = 0; i < top->pitch*top->height; i += top->bpp) {
 		double ialpha = (255.0-top->data[i+3])/255.0;
 		bottom->data[i] = bottom->data[i]*ialpha+top->data[i];
 		bottom->data[i+1] = bottom->data[i+1]*ialpha+top->data[i+1];
@@ -43,6 +43,8 @@ static inline void blend(struct fb *bottom, struct fb *top) {
 
 bool is_layer_updated(struct layer *l) {
 	struct object *o;
+	if (!l->cache)
+		return true;
 	list_for_each_entry(o, &l->objs, siblings) {
 		for (int i = 0; i < o->nparams; i++)
 			if (o->param[i]->changed)
@@ -55,7 +57,7 @@ void render_layer(struct layer *l) {
 	struct object *o;
 	list_for_each_entry(o, &l->objs, siblings) {
 		assert(o->render);
-		o->render(o, &l->cache);
+		o->render(o, l->cache);
 	}
 }
 
@@ -63,9 +65,12 @@ void render_scene(struct fb *fb, struct scene *s) {
 	for (int i = 0; i < s->nlayers; i++) {
 		if (is_layer_updated(s->layer+i)) {
 			size_t size = fb->pitch*fb->height;
-			memset(s->layer[i].cache.data, 0, size);
+			if (!s->layer[i].cache)
+				s->layer[i].cache = new_similar_fb(fb);
+			else
+				memset(s->layer[i].cache->data, 0, size);
 			render_layer(s->layer+i);
-			blend(fb, &s->layer[i].cache); // should cache blend result too XXX
+			blend(fb, s->layer[i].cache); // should cache blend result too XXX
 		}
 	}
 }
@@ -97,13 +102,17 @@ static void render_rect(struct object *_o, const struct fb *fb) {
 	       g = color_clamp(V(o->g)),
 	       b = color_clamp(V(o->b)),
 	       a = color_clamp(V(o->a));
-	for (uint32_t i = V(o->x); i < V(o->x)+V(o->width); i++) {
+	for (uint32_t i = V(o->x); i < V(o->x)+V(o->height); i++) {
+		if (i >= fb->height)
+			break;
 		uint32_t ba = i*fb->pitch;
-		for (uint32_t j = V(o->y); j < V(o->y)+V(o->height); j++) {
-			fb->data[ba+j] = b;
-			fb->data[ba+j+1] = g;
-			fb->data[ba+j+2] = r;
-			fb->data[ba+j+3] = a;
+		for (uint32_t j = V(o->y); j < V(o->y)+V(o->width); j++) {
+			if (j >= fb->width)
+				break;
+			fb->data[ba+j*4] = b;
+			fb->data[ba+j*4+1] = g;
+			fb->data[ba+j*4+2] = r;
+			fb->data[ba+j*4+3] = a;
 		}
 	}
 }
@@ -124,7 +133,11 @@ struct object *new_rect(var *x, var *y, var *width, var *height, var *r, var *g,
 }
 
 struct scene *new_scene(int nlayers) {
-	return calloc(1, sizeof(struct scene)+sizeof(struct layer)*nlayers);
+	struct scene *ret = calloc(1, sizeof(struct scene)+sizeof(struct layer)*nlayers);
+	ret->nlayers = nlayers;
+	for (int i = 0; i < nlayers; i++)
+		INIT_LIST_HEAD(&ret->layer[i].objs);
+	return ret;
 }
 
 struct layer *get_layer(struct scene *s, int n) {
@@ -134,4 +147,11 @@ struct layer *get_layer(struct scene *s, int n) {
 var **get_object_params(struct object *obj, int *nparams) {
 	*nparams = obj->nparams;
 	return obj->param;
+}
+
+struct fb *new_similar_fb(const struct fb *old) {
+	auto ret = tmalloc(struct fb, 1);
+	*ret = *old;
+	ret->data = calloc(ret->pitch, ret->height);
+	return ret;
 }

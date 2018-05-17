@@ -25,7 +25,6 @@ struct plane_prop_ids {
 };
 struct plane {
 	int id;
-	struct fb_params *curr_fb;
 	struct plane_prop_ids pid;
 };
 struct drm_backend {
@@ -34,6 +33,7 @@ struct drm_backend {
 	drmModeCrtcPtr crtc;
 	uint32_t cursor_x, cursor_y;
 	int fd;
+	EV_P;
 
 	// 0,1 double primary fb, 2 cursor fb
 	struct fb_params fb[3];
@@ -76,12 +76,15 @@ static inline void atomic_add(drmModeAtomicReqPtr r, uint32_t id, uint32_t prop,
 }
 
 static inline int atomic_check(drmModeAtomicReqPtr atomic, int fd) {
-	uint32_t flags = DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_NONBLOCK;
+	uint32_t flags = DRM_MODE_ATOMIC_TEST_ONLY;
 	return drmModeAtomicCommit(fd, atomic, flags, NULL);
 }
-static inline int atomic_commit(drmModeAtomicReqPtr atomic, int fd) {
+static inline int atomic_commit_sync(drmModeAtomicReqPtr atomic, int fd) {
+	return drmModeAtomicCommit(fd, atomic, 0, NULL);
+}
+static inline int atomic_commit(drmModeAtomicReqPtr atomic, int fd, void *ud) {
 	uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
-	return drmModeAtomicCommit(fd, atomic, flags, NULL);
+	return drmModeAtomicCommit(fd, atomic, flags, ud);
 }
 static inline drmModeCrtcPtr find_crtc(int fd, uint32_t w, uint32_t h) {
 	auto r = drmModeGetResources(fd);
@@ -162,22 +165,18 @@ static int find_plane_by_type(drmModePlaneResPtr pres, int fd, uint64_t wtype, s
 	return -1;
 }
 
-static int setup_plane(drmModeAtomicReqPtr atomic, int fd, struct plane *pl, uint32_t crtc_id) {
+static int setup_plane(drmModeAtomicReqPtr atomic, int fd, struct plane *pl, uint32_t w, uint32_t h) {
 	uint32_t id = pl->id;
 	auto props = &pl->pid;
-	auto src_w = pl->curr_fb->w;
-	auto src_h = pl->curr_fb->h;
 	atomic_add(atomic, id, props->src_x, 0);
 	atomic_add(atomic, id, props->src_y, 0);
-	atomic_add(atomic, id, props->src_w, src_w << 16);
-	atomic_add(atomic, id, props->src_h, src_h << 16);
-	atomic_add(atomic, id, props->crtc_w, src_w);
-	atomic_add(atomic, id, props->crtc_h, src_h);
-	atomic_add(atomic, id, props->fb_id, pl->curr_fb->fb);
-	atomic_add(atomic, id, props->crtc_id, crtc_id);
+	atomic_add(atomic, id, props->src_w, w << 16);
+	atomic_add(atomic, id, props->src_h, h << 16);
+	atomic_add(atomic, id, props->crtc_w, w);
+	atomic_add(atomic, id, props->crtc_h, h);
 	atomic_add(atomic, id, props->crtc_x, 0);
 	atomic_add(atomic, id, props->crtc_y, 0);
-	if (!atomic_check(atomic, fd))
+	if (atomic_check(atomic, fd))
 		return -1;
 	return 0;
 }
@@ -221,17 +220,29 @@ free_dumb:;
 	return ret;
 }
 
-static void drm_callback(EV_P_ ev_io *iow, int revent) {
-	struct drm_backend *b = container_of(iow, struct drm_backend, iow);
+static void
+drm_page_flip_handler(int fd, unsigned int seq,
+                      unsigned int sec, unsigned int usec,
+                      void *ud) {
+	struct drm_backend *b = ud;
 	b->base.busy = false;
 	if (b->base.page_flip_cb)
-		b->base.page_flip_cb(EV_A_ b->base.user_data);
+		b->base.page_flip_cb(b->EV_A_ b->base.user_data);
+}
+
+static void drm_callback(EV_P_ ev_io *iow, int revent) {
+	drmEventContext ev = {0};
+	ev.version = DRM_EVENT_CONTEXT_VERSION;
+	ev.page_flip_handler = drm_page_flip_handler;
+	drmHandleEvent(iow->fd, &ev);
 }
 struct backend *drm_setup(EV_P_ uint32_t w, uint32_t h) {
 #define ERET(expr) do { \
 	__auto_type ret = (expr); \
-	if (ret) \
+	if (ret) {\
+		fprintf(stderr, # expr " has failed\n"); \
 		goto err_out; \
+	} \
 } while(0)
 
 	struct drm_backend *b = tmalloc(struct drm_backend, 1);
@@ -254,6 +265,7 @@ struct backend *drm_setup(EV_P_ uint32_t w, uint32_t h) {
 	b->crtc = find_crtc(fd, w, h);
 	b->base.w = b->crtc->width;
 	b->base.h = b->crtc->height;
+	b->EV_A = EV_A;
 
 	ERET(drmGetCap(fd, DRM_CAP_CURSOR_WIDTH, &tmp));
 	b->base.cursor_w = tmp;
@@ -262,7 +274,7 @@ struct backend *drm_setup(EV_P_ uint32_t w, uint32_t h) {
 
 	ERET(init_fb(fd, b->base.w, b->base.h, 24, &b->fb[0]));
 	ERET(init_fb(fd, b->base.w, b->base.h, 24, &b->fb[1]));
-	ERET(init_fb(fd, b->base.cursor_w, b->base.cursor_h, 24, &b->fb[2]));
+	ERET(init_fb(fd, b->base.cursor_w, b->base.cursor_h, 32, &b->fb[2]));
 	b->front = 0;
 
 	auto pres = drmModeGetPlaneResources(fd);
@@ -274,9 +286,11 @@ struct backend *drm_setup(EV_P_ uint32_t w, uint32_t h) {
 	ev_io_start(EV_A_ &b->iow);
 
 	atomic = atomic_begin();
-	ERET(setup_plane(atomic, fd, &b->plane[0], b->crtc->crtc_id));
-	ERET(setup_plane(atomic, fd, &b->plane[1], b->crtc->crtc_id));
-	ERET(atomic_commit(atomic, fd));
+	ERET(setup_plane(atomic, fd, &b->plane[0], b->base.w, b->base.h));
+	ERET(setup_plane(atomic, fd, &b->plane[1], b->base.cursor_w, b->base.cursor_h));
+	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.fb_id, b->fb[2].fb);
+	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.crtc_id, b->crtc->crtc_id);
+	ERET(atomic_commit_sync(atomic, fd));
 	drmModeAtomicFree(atomic);
 	atomic = NULL;
 
@@ -309,13 +323,15 @@ drm_queue_frame(struct backend *_b, struct fb *fb,
 
 	auto atomic = atomic_begin();
 	atomic_add(atomic, b->plane[0].id, b->plane[0].pid.fb_id, b->fb[b->front].fb);
+	atomic_add(atomic, b->plane[0].id, b->plane[0].pid.crtc_id, b->crtc->crtc_id);
 	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.crtc_x, cursor_x);
 	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.crtc_y, cursor_y);
 	ERET(atomic_check(atomic, b->fd));
-	ERET(atomic_commit(atomic, b->fd));
+	ERET(atomic_commit(atomic, b->fd, b));
 	drmModeAtomicFree(atomic);
 	atomic = NULL;
 
+	b->base.busy = true;
 	free(fb->data);
 	free(fb);
 	return 0;
@@ -340,7 +356,8 @@ drm_set_cursor(struct backend *_b, struct fb *fb) {
 }
 
 static struct fb *
-drm_new_fb(struct backend *_b) {
+drm_new_fb(struct backend *_b, int purpose) {
+	(void)purpose; // ignore for now
 	struct drm_backend *b = (void *)_b;
 	auto ret = tmalloc(struct fb, 1);
 	ret->bpp = 4;

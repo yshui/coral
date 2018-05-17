@@ -22,3 +22,4 @@ void add_object_to_layer(struct object *o, struct layer *l);
 void set_object_parent(struct object *, struct object *parent);
 struct layer *get_layer(struct scene *s, int n);
 struct scene *new_scene(int nlayers);
+struct fb* new_similar_fb(const struct fb *old);
