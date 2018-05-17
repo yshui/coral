@@ -1,0 +1,7 @@
+project('dm', 'c')
+cc = meson.get_compiler('c')
+drm = dependency('libdrm')
+libinput = dependency('libinput')
+udev = dependency('libudev')
+libev = cc.find_library('ev', required: true)
+executable('dm', ['main.c', 'interpolate.c', 'render.c', 'backend_drm.c'], dependencies: [drm, libinput, udev, libev])
