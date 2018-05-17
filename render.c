@@ -122,3 +122,16 @@ struct object *new_rect(var *x, var *y, var *width, var *height, var *r, var *g,
 	n->base.render = render_rect;
 	return &n->base;
 }
+
+struct scene *new_scene(int nlayers) {
+	return calloc(1, sizeof(struct scene)+sizeof(struct layer)*nlayers);
+}
+
+struct layer *get_layer(struct scene *s, int n) {
+	 return &s->layer[n];
+}
+
+var **get_object_params(struct object *obj, int *nparams) {
+	*nparams = obj->nparams;
+	return obj->param;
+}

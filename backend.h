@@ -9,7 +9,7 @@ struct backend {
 	bool busy; // indicates whether we could call queue_frame()
 	uint32_t w, h, cursor_w, cursor_h;
 	void *user_data;
-	void (*page_flip_cb)(void *user_data);
+	void (*page_flip_cb)(EV_P_ void *user_data);
 };
 
 struct backend_ops {

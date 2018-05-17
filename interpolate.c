@@ -3,6 +3,7 @@
 #include <math.h>
 #include "list.h"
 #include "interpolate.h"
+#include "common.h"
 
 struct interpolate_man {
 	struct list_head interpolatables;
@@ -47,7 +48,7 @@ void interpolatable_advance(var *i, double dt) {
 	while(dt >= new_head->eta) {
 		struct key_frame *next = new_head->next;
 		if (new_head->callback)
-			new_head->callback(new_head, true);
+			new_head->callback(i, new_head, true, next->ud);
 		dt -= new_head->eta;
 		i->last_setpoint = new_head->setpoint;
 		i->current = new_head->setpoint;
@@ -79,4 +80,31 @@ void interpolate_man_advance(struct interpolate_man *im, double dt) {
 
 void interpolate_man_register(struct interpolate_man *im, var *i) {
 	list_add(&i->siblings, &im->interpolatables);
+}
+
+struct interpolate_man *interpolate_man_new(void) {
+	auto im = tmalloc(struct interpolate_man, 1);
+	INIT_LIST_HEAD(&im->interpolatables);
+	return im;
+}
+
+void var_new_linear_key(var *v, double setpoint, double eta, key_cb cb, void *ud) {
+	auto k = tmalloc(struct key_frame, 1);
+	k->eta = eta;
+	k->setpoint = setpoint;
+	k->callback = cb;
+	k->advance = interpolatable_linear;
+	k->ud = ud;
+	*v->last_key = k;
+	v->last_key = &k->next;
+}
+
+var *new_var(struct interpolate_man *im, double val) {
+	var *ret = tmalloc(var, 1);
+	ret->current = ret->last_setpoint = val;
+	ret->elapsed = 0;
+	ret->last_key = &ret->keys;
+	if (im)
+		interpolate_man_register(im, ret);
+	return ret;
 }

@@ -223,8 +223,9 @@ free_dumb:;
 
 static void drm_callback(EV_P_ ev_io *iow, int revent) {
 	struct drm_backend *b = container_of(iow, struct drm_backend, iow);
+	b->base.busy = false;
 	if (b->base.page_flip_cb)
-		b->base.page_flip_cb(b->base.user_data);
+		b->base.page_flip_cb(EV_A_ b->base.user_data);
 }
 struct backend *drm_setup(EV_P_ uint32_t w, uint32_t h) {
 #define ERET(expr) do { \
@@ -315,10 +316,14 @@ drm_queue_frame(struct backend *_b, struct fb *fb,
 	drmModeAtomicFree(atomic);
 	atomic = NULL;
 
+	free(fb->data);
+	free(fb);
+	return 0;
+
 err_out:
 	if (atomic)
 		drmModeAtomicFree(atomic);
-	return 0;
+	return -3;
 #undef ERET
 }
 
@@ -336,7 +341,14 @@ drm_set_cursor(struct backend *_b, struct fb *fb) {
 
 static struct fb *
 drm_new_fb(struct backend *_b) {
-
+	struct drm_backend *b = (void *)_b;
+	auto ret = tmalloc(struct fb, 1);
+	ret->bpp = 4;
+	ret->pitch = b->fb[0].pitch;
+	ret->height = b->fb[0].h;
+	ret->width = b->fb[0].w;
+	ret->data = calloc(ret->pitch, ret->height);
+	return ret;
 }
 
 const struct backend_ops drm_ops = {
