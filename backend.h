@@ -29,6 +29,9 @@ struct backend_ops {
 
 	// fb has to be exactly cursor_w * cursor_h
 	bool (*set_cursor)(struct backend *b, struct fb *fb);
+
+	// Create a fb that's suitable as to be used as a frame
+	struct fb *(*new_fb)(struct backend *b);
 };
 
 extern const struct backend_ops drm_ops;

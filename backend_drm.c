@@ -334,8 +334,14 @@ drm_set_cursor(struct backend *_b, struct fb *fb) {
 	return true;
 }
 
+static struct fb *
+drm_new_fb(struct backend *_b) {
+
+}
+
 const struct backend_ops drm_ops = {
 	.setup = drm_setup,
 	.queue_frame = drm_queue_frame,
-	.set_cursor = drm_set_cursor
+	.set_cursor = drm_set_cursor,
+	.new_fb = drm_new_fb
 };
