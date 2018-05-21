@@ -2,16 +2,26 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
+#include <stddef.h>
+#include <limits.h>
 #include "common.h"
 #include "list.h"
 #include "interpolate.h"
 #include "render.h"
 
+struct render_buf {
+	uint8_t * restrict data;
+	uint8_t pitch;
+	uint8_t pixfmt;
+};
+
 struct object {
-	struct object *parent;
 	struct list_head siblings;
-	void (*render)(struct object *, const struct fb *);
+	void (*render)(struct object *);
+	var *x, *y, *w, *h;
+	struct render_buf buf;
 
 	int nparams;
 	var *param[0];
@@ -27,50 +37,90 @@ struct scene {
 	struct layer layer[0];
 };
 
-static inline void blend(struct fb *bottom, struct fb *top) {
-	assert(bottom->pitch == top->pitch);
-	assert(bottom->height == top->height);
-	assert(bottom->width == top->width);
-	assert(bottom->bpp == top->bpp);
-	assert(top->bpp == 4);
-	for (uint32_t i = 0; i < top->pitch*top->height; i += top->bpp) {
-		double ialpha = (255.0-top->data[i+3])/255.0;
-		bottom->data[i] = bottom->data[i]*ialpha+top->data[i];
-		bottom->data[i+1] = bottom->data[i+1]*ialpha+top->data[i+1];
-		bottom->data[i+2] = bottom->data[i+2]*ialpha+top->data[i+2];
+void blit(const struct fb *bottom, const struct render_buf *top,
+	  int32_t x, int32_t y, int32_t h, int32_t w) {
+	assert(pixfmt_compat(bottom->pixfmt, top->pixfmt));
+	assert(h <= INT_MAX);
+	assert(top->data);
+
+	//Clipping
+	if (x >= bottom->height || y >= bottom->width)
+		// outside
+		return;
+	if (x < -h || y < -w) {
+		fprintf(stderr, "out\n");
+		// outside
+		return;
+	}
+
+	int32_t src_x = 0, src_y = 0;
+	// clip top
+	if (x < 0)
+		src_x = -x;
+	// clip left
+	if (y < 0)
+		src_y = -y;
+	// clip bottom
+	if (x+h >= bottom->height)
+		h = bottom->height-x-1;
+	//clip right
+	if (y+w >= bottom->width)
+		w = bottom->width-y-1;
+
+	if (top->pixfmt == XRGB8888) {
+		uint32_t real_pitch = (w-src_y)*pixfmt_bpp(top->pixfmt);
+		for (uint32_t i = src_x; i < h; i++) {
+			auto basea = i*top->pitch+src_y*pixfmt_bpp(top->pixfmt);
+			auto baseb = (i+x)*bottom->pitch+(y+src_y)*pixfmt_bpp(bottom->pixfmt);
+			memcpy(bottom->data+baseb, top->data+basea, real_pitch);
+		}
+		return;
+	}
+
+	for (uint32_t i = src_x; i < h; i++) {
+		auto basea = i*top->pitch+src_y*pixfmt_bpp(top->pixfmt);
+		auto baseb = (i+x)*bottom->pitch+y*pixfmt_bpp(bottom->pixfmt);
+		for (uint32_t j = src_y; j < w; j++) {
+			if (!top->data[basea+3])
+				continue;
+
+			double ialpha = (255.0-top->data[basea+3])/255.0;
+			bottom->data[baseb] = bottom->data[baseb]*ialpha+top->data[basea];
+			bottom->data[baseb+1] = bottom->data[baseb+1]*ialpha+top->data[basea+1];
+			bottom->data[baseb+2] = bottom->data[baseb+2]*ialpha+top->data[basea+2];
+			basea += pixfmt_bpp(bottom->pixfmt);
+			baseb += pixfmt_bpp(top->pixfmt);
+		}
 	}
 }
 
-bool is_layer_updated(struct layer *l) {
-	struct object *o;
-	if (!l->cache)
-		return true;
-	list_for_each_entry(o, &l->objs, siblings) {
-		for (int i = 0; i < o->nparams; i++)
-			if (o->param[i]->changed)
-				return true;
+void render_object(struct object *obj, bool force) {
+	bool need_rerender = false;
+	if (C(obj->w) || C(obj->h)) {
+		need_rerender = true;
+		free(obj->buf.data);
+		obj->buf.data = NULL;
 	}
-	return false;
+	for (int i = 0; i < obj->nparams; i++)
+		if (C(obj->param[i])) {
+			need_rerender = true;
+			break;
+		}
+	if (force || need_rerender) {
+		if (!obj->buf.data) {
+			obj->buf.pitch = V(obj->w)*pixfmt_bpp(obj->buf.pixfmt);
+			obj->buf.data = malloc(V(obj->w)*obj->buf.pitch);
+		}
+		obj->render(obj);
+	}
 }
 
-void render_layer(struct layer *l) {
-	struct object *o;
-	list_for_each_entry(o, &l->objs, siblings) {
-		assert(o->render);
-		o->render(o, l->cache);
-	}
-}
-
-void render_scene(struct fb *fb, struct scene *s) {
+void render_scene(struct fb *fb, struct scene *s, bool force) {
 	for (int i = 0; i < s->nlayers; i++) {
-		if (is_layer_updated(s->layer+i)) {
-			size_t size = fb->pitch*fb->height;
-			if (!s->layer[i].cache)
-				s->layer[i].cache = new_similar_fb(fb);
-			else
-				memset(s->layer[i].cache->data, 0, size);
-			render_layer(s->layer+i);
-			blend(fb, s->layer[i].cache); // should cache blend result too XXX
+		struct object *o;
+		list_for_each_entry(o, &s->layer[i].objs, siblings) {
+			render_object(o, force);
+			blit(fb, &o->buf, V(o->x), V(o->y), V(o->w), V(o->h));
 		}
 	}
 }
@@ -79,14 +129,8 @@ void add_object_to_layer(struct object *o, struct layer *l) {
 	list_add(&o->siblings, &l->objs);
 }
 
-void set_object_parent(struct object *o, struct object *p) {
-	o->parent = p;
-}
-
 struct rect {
 	struct object base;
-	var *x, *y;
-	var *width, *height;
 	var *r, *g, *b, *a;
 };
 
@@ -96,38 +140,48 @@ static inline double color_clamp(double in) {
 	return in;
 }
 
-static void render_rect(struct object *_o, const struct fb *fb) {
+static void render_rect(struct object *_o) {
 	struct rect *o = (void *)_o;
 	double r = color_clamp(V(o->r)),
 	       g = color_clamp(V(o->g)),
 	       b = color_clamp(V(o->b)),
 	       a = color_clamp(V(o->a));
-	for (uint32_t i = V(o->x); i < V(o->x)+V(o->height); i++) {
-		if (i >= fb->height)
-			break;
-		uint32_t ba = i*fb->pitch;
-		for (uint32_t j = V(o->y); j < V(o->y)+V(o->width); j++) {
-			if (j >= fb->width)
-				break;
-			fb->data[ba+j*4] = b;
-			fb->data[ba+j*4+1] = g;
-			fb->data[ba+j*4+2] = r;
-			fb->data[ba+j*4+3] = a;
+
+	uint8_t *data = o->base.buf.data;
+
+	for (uint32_t i = 0; i < V(o->base.h); i++) {
+		uint32_t ba = i*_o->buf.pitch;
+		for (uint32_t j = 0; j < V(o->base.w); j++) {
+			data[ba+j*4] = b*a/255.0;
+			data[ba+j*4+1] = g*a/255.0;
+			data[ba+j*4+2] = r*a/255.0;
+			data[ba+j*4+3] = a;
 		}
 	}
 }
 
-struct object *new_rect(var *x, var *y, var *width, var *height, var *r, var *g, var *b, var *a) {
-	struct rect *n = tmalloc(struct rect, 1);
-	n->x = x;
-	n->y = y;
-	n->width = width;
-	n->height = height;
+void set_obj_pixfmt(struct object *o, uint8_t pixfmt) {
+	o->buf.pixfmt = pixfmt;
+}
+
+struct object *new_obj(var *x, var *y, var *w, var *h, int nparams) {
+	struct object *ret = calloc(1, sizeof(struct object)+sizeof(var*)*nparams);
+	ret->x = x;
+	ret->y = y;
+	ret->w = w;
+	ret->h = h;
+	ret->buf.pixfmt = XRGB8888;
+
+	ret->nparams = nparams;
+	return ret;
+}
+
+struct object *new_rect(var *x, var *y, var *w, var *h, var *r, var *g, var *b, var *a) {
+	struct rect *n = (void *)new_obj(x, y, w, h, 4);
 	n->r = r;
 	n->g = g;
 	n->b = b;
 	n->a = a;
-	n->base.nparams = 8;
 	n->base.render = render_rect;
 	return &n->base;
 }

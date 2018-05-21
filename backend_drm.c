@@ -138,6 +138,7 @@ static inline uint64_t get_plane_##name(struct plane *pl, drmModeObjectPropertie
 		} \
 	} \
 	assert(false); \
+	__builtin_unreachable(); \
 } \
 
 gen_prop_getter(crtc_id)
@@ -360,7 +361,7 @@ drm_new_fb(struct backend *_b, int purpose) {
 	(void)purpose; // ignore for now
 	struct drm_backend *b = (void *)_b;
 	auto ret = tmalloc(struct fb, 1);
-	ret->bpp = 4;
+	ret->pixfmt = XRGB8888;
 	ret->pitch = b->fb[0].pitch;
 	ret->height = b->fb[0].h;
 	ret->width = b->fb[0].w;

@@ -20,12 +20,11 @@ struct config {
 void render_callback(EV_P_ void *user_data) {
 	struct config *c = user_data;
 	struct fb *fb = c->bops->new_fb(c->b, RENDER_FB);
-	if (!fb) {
+	if (!fb)
 		ev_break(EV_A_ EVBREAK_ALL);
-	}
 	interpolate_man_advance(c->im, ev_now(EV_A)-c->last_timestamp);
 	c->last_timestamp = ev_now(EV_A);
-	render_scene(fb, c->s);
+	render_scene(fb, c->s, false);
 	fprintf(stderr, "queue frame\n");
 	c->bops->queue_frame(c->b, fb, c->i->cursor_x, c->i->cursor_y);
 }
@@ -45,7 +44,13 @@ int main() {
 	cfg.b->page_flip_cb = render_callback;
 	cfg.last_timestamp = ev_now(EV_DEFAULT);
 
-	render_callback(EV_DEFAULT, &cfg);
+	// Render first frame
+	struct fb *fb = cfg.bops->new_fb(cfg.b, RENDER_FB);
+	if (!fb)
+		return 1;
+	cfg.last_timestamp = ev_now(EV_DEFAULT);
+	render_scene(fb, cfg.s, true);
+	cfg.bops->queue_frame(cfg.b, fb, cfg.i->cursor_x, cfg.i->cursor_y);
 	ev_run(EV_DEFAULT, 0);
 
 	return 0;
