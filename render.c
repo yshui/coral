@@ -11,17 +11,11 @@
 #include "interpolate.h"
 #include "render.h"
 
-struct render_buf {
-	uint8_t * restrict data;
-	uint8_t pitch;
-	uint8_t pixfmt;
-};
-
 struct object {
 	struct list_head siblings;
 	void (*render)(struct object *);
 	var *x, *y, *w, *h;
-	struct render_buf buf;
+	struct fb fb;
 
 	int nparams;
 	var *param[0];
@@ -37,21 +31,20 @@ struct scene {
 	struct layer layer[0];
 };
 
-void blit(const struct fb *bottom, const struct render_buf *top,
-	  int32_t x, int32_t y, int32_t h, int32_t w) {
+void blit(const struct fb *bottom, const struct fb *top,
+	  int32_t x, int32_t y) {
 	assert(pixfmt_compat(bottom->pixfmt, top->pixfmt));
-	assert(h <= INT_MAX);
+	assert(top->height <= INT_MAX);
 	assert(top->data);
 
+	int32_t w = top->width, h = top->height;
 	//Clipping
 	if (x >= bottom->height || y >= bottom->width)
 		// outside
 		return;
-	if (x < -h || y < -w) {
-		fprintf(stderr, "out\n");
+	if (x < -h || y < -w)
 		// outside
 		return;
-	}
 
 	int32_t src_x = 0, src_y = 0;
 	// clip top
@@ -98,8 +91,8 @@ void render_object(struct object *obj, bool force) {
 	bool need_rerender = false;
 	if (C(obj->w) || C(obj->h)) {
 		need_rerender = true;
-		free(obj->buf.data);
-		obj->buf.data = NULL;
+		free(obj->fb.data);
+		obj->fb.data = NULL;
 	}
 	for (int i = 0; i < obj->nparams; i++)
 		if (C(obj->param[i])) {
@@ -107,9 +100,11 @@ void render_object(struct object *obj, bool force) {
 			break;
 		}
 	if (force || need_rerender) {
-		if (!obj->buf.data) {
-			obj->buf.pitch = V(obj->w)*pixfmt_bpp(obj->buf.pixfmt);
-			obj->buf.data = malloc(V(obj->w)*obj->buf.pitch);
+		if (!obj->fb.data) {
+			obj->fb.width = V(obj->w);
+			obj->fb.pitch = obj->fb.width*pixfmt_bpp(obj->fb.pixfmt);
+			obj->fb.height = V(obj->h);
+			obj->fb.data = malloc(obj->fb.height*obj->fb.pitch);
 		}
 		obj->render(obj);
 	}
@@ -120,7 +115,7 @@ void render_scene(struct fb *fb, struct scene *s, bool force) {
 		struct object *o;
 		list_for_each_entry(o, &s->layer[i].objs, siblings) {
 			render_object(o, force);
-			blit(fb, &o->buf, V(o->x), V(o->y), V(o->w), V(o->h));
+			blit(fb, &o->fb, V(o->x), V(o->y));
 		}
 	}
 }
@@ -147,10 +142,10 @@ static void render_rect(struct object *_o) {
 	       b = color_clamp(V(o->b)),
 	       a = color_clamp(V(o->a));
 
-	uint8_t *data = o->base.buf.data;
+	uint8_t *data = o->base.fb.data;
 
 	for (uint32_t i = 0; i < V(o->base.h); i++) {
-		uint32_t ba = i*_o->buf.pitch;
+		uint32_t ba = i*_o->fb.pitch;
 		for (uint32_t j = 0; j < V(o->base.w); j++) {
 			data[ba+j*4] = b*a/255.0;
 			data[ba+j*4+1] = g*a/255.0;
@@ -161,7 +156,7 @@ static void render_rect(struct object *_o) {
 }
 
 void set_obj_pixfmt(struct object *o, uint8_t pixfmt) {
-	o->buf.pixfmt = pixfmt;
+	o->fb.pixfmt = pixfmt;
 }
 
 struct object *new_obj(var *x, var *y, var *w, var *h, int nparams) {
@@ -170,7 +165,7 @@ struct object *new_obj(var *x, var *y, var *w, var *h, int nparams) {
 	ret->y = y;
 	ret->w = w;
 	ret->h = h;
-	ret->buf.pixfmt = XRGB8888;
+	ret->fb.pixfmt = XRGB8888;
 
 	ret->nparams = nparams;
 	return ret;

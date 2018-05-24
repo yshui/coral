@@ -36,6 +36,7 @@ var *new_keyed(struct interpolate_man *im, double val);
 var *new_const(double val);
 var *new_arith(enum op op, var *lhs, var *rhs);
 void keyed_new_linear_key(keyed *v, double set, double etc, key_cb cb, void *ud);
+void keyed_new_quadratic_key(keyed *v, double set, double etc, key_cb cb, void *ud);
 
 #define vADD(a, b) new_arith(ADD, a, b)
 #define vNEG(a) new_arith(NEG, a, NULL)

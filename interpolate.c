@@ -10,19 +10,20 @@
 
 struct key_frame;
 struct key_frame {
-	double eta;
+	double elapsed;
+	double duration;
 	double setpoint;
 	key_cb callback;
 	void (*advance)(keyed *i, struct key_frame *k, double dt);
 	void *ud;
 	struct key_frame *next;
 };
+
 struct keyed_var {
 	struct var base;
 	bool changed;
 	double current;
 	double last_setpoint;
-	double elapsed;
 	struct key_frame *keys, **last_key;
 };
 
@@ -31,15 +32,23 @@ struct interpolate_man {
 };
 
 void linear_advance(keyed *i, struct key_frame *k, double dt) {
-	double d = (k->setpoint-i->last_setpoint)/(k->eta+i->elapsed)*dt;
+	double d = (k->setpoint-i->last_setpoint)/k->duration*dt;
 	i->changed = true;
 	i->current += d;
 	fprintf(stderr, "curr %lf\n", i->current);
 }
 
+void quadratic_advance(keyed *i, struct key_frame *k, double dt) {
+	double v = 2*(k->setpoint-i->last_setpoint)/k->duration;
+	double a = v/k->duration;
+	double d = i->last_setpoint+v*k->elapsed-0.5*a*k->elapsed*k->elapsed;
+	i->changed = true;
+	i->current = d;
+}
+
 // XXX this won't work with current model
 void step_advance(keyed *i, struct key_frame *k, double dt) {
-	int pos = (k->setpoint-i->last_setpoint)/(k->eta+i->elapsed)*(k->eta+dt);
+	int pos = (k->setpoint-i->last_setpoint)/k->duration*k->elapsed;
 	double old = i->current;
 	i->current = pos;
 	i->changed = fabs(old-i->current) > 1e-6;
@@ -57,7 +66,6 @@ void keyed_truncate(keyed *i) {
 		free(k);
 		k = next;
 	}
-	i->elapsed = 0;
 	i->last_setpoint = i->current;
 }
 
@@ -72,13 +80,12 @@ static void keyed_var_advance(var *_i, double dt) {
 	// Remove expired frames, set changed to true, update last_setpoint,
 	// reset elapsed
 	double changed = false;
-	while(new_head && dt >= new_head->eta) {
+	while(new_head && dt >= (new_head->duration-new_head->elapsed)) {
 		if (new_head->callback)
 			new_head->callback(i, new_head, true, new_head->ud);
-		dt -= new_head->eta;
+		dt -= new_head->duration-new_head->elapsed;
 		i->last_setpoint = new_head->setpoint;
 		i->current = new_head->setpoint;
-		i->elapsed = 0;
 		changed = true;
 
 		struct key_frame *next = new_head->next;
@@ -87,11 +94,10 @@ static void keyed_var_advance(var *_i, double dt) {
 	}
 
 	// Call advance on current key frame
-	i->elapsed += dt;
 	if (new_head) {
+		new_head->elapsed += dt;
 		if (new_head->advance)
 			new_head->advance(i, new_head, dt);
-		new_head->eta -= dt;
 	} else
 		i->last_key = &i->keys;
 
@@ -116,14 +122,28 @@ struct interpolate_man *interpolate_man_new(void) {
 	return im;
 }
 
-void keyed_new_linear_key(keyed *v, double setpoint, double eta, key_cb cb, void *ud) {
-	auto k = tmalloc(struct key_frame, 1);
-	k->eta = eta;
-	k->setpoint = setpoint;
+static struct key_frame *
+new_key(keyed *v, double set, double duration, key_cb cb, void *ud, size_t size) {
+	struct key_frame *k = calloc(1, size);
+	k->duration = duration;
+	k->elapsed = 0;
+	k->setpoint = set;
 	k->callback = cb;
-	k->advance = linear_advance;
 	k->ud = ud;
 	keyed_append_keyframe(v, k);
+	return k;
+}
+
+void keyed_new_linear_key(keyed *v, double setpoint, double duration,
+                          key_cb cb, void *ud) {
+	auto k = new_key(v, setpoint, duration, cb, ud, sizeof(struct key_frame));
+	k->advance = linear_advance;
+}
+
+void keyed_new_quadratic_key(keyed *v, double setpoint, double duration,
+                             key_cb cb, void *ud) {
+	auto k = new_key(v, setpoint, duration, cb, ud, sizeof(struct key_frame));
+	k->advance = quadratic_advance;
 }
 
 var *new_keyed(struct interpolate_man *im, double val) {
@@ -131,7 +151,6 @@ var *new_keyed(struct interpolate_man *im, double val) {
 	ret->base.ops = &keyed_var_ops;
 	ret->changed = true;
 	ret->current = ret->last_setpoint = val;
-	ret->elapsed = 0;
 	ret->last_key = &ret->keys;
 	if (im)
 		interpolate_man_register(im, &ret->base);
