@@ -184,6 +184,12 @@ var *new_arith(enum op op, var *a, var *b) {
 	return &ret->base;
 }
 
+struct filter_var {
+	var base;
+	var *a;
+	double (*filter)(double);
+};
+
 static double const_var_current(var *i) {
 	return ((struct const_var *)i)->current;
 }
@@ -199,6 +205,16 @@ static double keyed_var_current(var *i) {
 static bool arith_var_changed(var *i) {
 	struct arith_var *v = (void *)i;
 	return C(v->a) || C(v->b);
+}
+
+static double filter_var_current(var *i) {
+	struct filter_var *v = (void *)i;
+	return v->filter(V(v->a));
+}
+
+static bool filter_var_changed(var *i) {
+	struct filter_var *v = (void *)i;
+	return C(v->a);
 }
 
 static double arith_var_current(var *i) {
@@ -226,4 +242,9 @@ const struct var_ops const_var_ops = {
 const struct var_ops arith_var_ops = {
 	.changed = arith_var_changed,
 	.current = arith_var_current,
+};
+
+const struct var_ops filter_var_ops = {
+	.changed = filter_var_changed,
+	.current = filter_var_current,
 };

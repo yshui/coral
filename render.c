@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <limits.h>
+#include <stb/stb_image_resize.h>
 #include "common.h"
 #include "list.h"
 #include "interpolate.h"
@@ -153,6 +154,19 @@ static void render_rect(struct object *_o) {
 			data[ba+j*4+3] = a;
 		}
 	}
+}
+
+struct scale {
+	struct object base;
+	struct fb *fb;
+};
+
+static void render_scale(struct object *_o) {
+	struct scale *o = (void *)_o;
+	stbir_resize_uint8_generic(o->fb->data, o->fb->width, o->fb->height, 0,
+	                           o->base.fb.data, o->base.fb.width, o->base.fb.height, 0,
+	                           4, 0, STBIR_FLAG_ALPHA_PREMULTIPLIED, STBIR_EDGE_CLAMP,
+	                           STBIR_FILTER_DEFAULT, STBIR_COLORSPACE_LINEAR, NULL);
 }
 
 void set_obj_pixfmt(struct object *o, uint8_t pixfmt) {
