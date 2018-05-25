@@ -1,10 +1,14 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <ev.h>
+#include <unistd.h>
+#include <ini.h>
 #include "user.h"
 #include "scene.h"
 #include "common.h"
 #include "backend.h"
 #include "render.h"
+#include "image.h"
 #include "input.h"
 #include "interpolate.h"
 
@@ -15,9 +19,26 @@ struct config {
 	struct scene *s;
 	struct input *i;
 	uint32_t cursor_x, cursor_y;
+	struct fb *cursor;
 
 	double last_timestamp;
 };
+
+int coral_ini_handler(void *ud, const char *section, const char *name, const char *value) {
+	struct config *c = ud;
+	if (strcmp(name, "cursor") == 0) {
+		c->cursor = load_image(value);
+	}
+	return 1;
+}
+
+void load_config(struct config *cfg) {
+	const char *global_config = "/etc/coral.conf";
+	if (access(global_config, R_OK) != 0)
+		return;
+
+	ini_parse(global_config, coral_ini_handler, (void *)cfg);
+}
 
 void render_callback(EV_P_ void *user_data) {
 	struct config *c = user_data;
@@ -36,11 +57,26 @@ void mouse_button_cb(int button, bool pressed, void *ud) {
 }
 
 void mouse_move_rel_cb(int dx, int dy, void *ud) {
-	fprintf(stderr, "%d %d\n", dx, dy);
+	struct config *c = ud;
+	if (dx < 0 && c->cursor_x < -dx)
+		c->cursor_x = 0;
+	else if (dx > 0 && c->b->w-c->cursor_x < dx)
+		c->cursor_x = c->b->w;
+	else
+		c->cursor_x += dx;
+
+	if (dy < 0 && c->cursor_y < -dy)
+		c->cursor_y = 0;
+	else if (dy > 0 && c->b->h-c->cursor_y < dy)
+		c->cursor_y = c->b->h;
+	else
+		c->cursor_y += dy;
+	fprintf(stderr, "%d %d %d %d\n", dx, dy, c->cursor_x, c->cursor_y);
 }
 
 int main() {
 	struct config cfg;
+	load_config(&cfg);
 	cfg.im = interpolate_man_new();
 
 	size_t nusers;
@@ -56,6 +92,9 @@ int main() {
 	cfg.b = cfg.bops->setup(EV_DEFAULT, 0, 0);
 	if (!cfg.b)
 		return 1;
+
+	if (cfg.cursor)
+		cfg.bops->set_cursor(cfg.b, cfg.cursor);
 
 	cfg.s = build_scene(cfg.im, users, nusers, cfg.b->w, cfg.b->h);
 	if (!cfg.s)

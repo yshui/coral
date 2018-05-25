@@ -347,12 +347,14 @@ err_out:
 static bool
 drm_set_cursor(struct backend *_b, struct fb *fb) {
 	struct drm_backend *b = (void *)_b;
-	if (fb->pitch != b->fb[2].pitch ||
-	    fb->pitch*fb->height != b->fb[2].size ||
-	    fb->width != b->fb[2].w ||
-	    fb->height != b->fb[2].h)
+	if (fb->pitch > b->fb[2].pitch ||
+	    fb->width > b->fb[2].w ||
+	    fb->height > b->fb[2].h)
 		return false;
-	memcpy(b->fb[2].map, fb->data, b->fb[2].size);
+
+	memset(b->fb[2].map, 0, b->fb[2].size);
+	for (int i = 0; i < fb->height; i++)
+		memcpy(b->fb[2].map+i*b->fb[2].pitch, fb->data+i*fb->pitch, fb->pitch);
 	return true;
 }
 

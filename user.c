@@ -4,10 +4,9 @@
 #include <string.h>
 #include <stdio.h>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
 #include "user.h"
 #include "common.h"
+#include "image.h"
 
 static const char avatar_file[] = "/.face.icon";
 
@@ -28,26 +27,8 @@ struct user *load_users(size_t *nusers) {
 		strcpy(avatar_path, p->pw_dir);
 		strcpy(avatar_path+dirlen, avatar_file);
 
-		FILE *f = fopen(avatar_path, "r");
-		if (!f) {
-			free(avatar_path);
-			continue;
-		}
-		int x, y, c;
-		auto img = stbi_load_from_callbacks(&stbi__stdio_callbacks, f, &x, &y, &c, 4);
-		fclose(f);
+		ret[n-1].avatar = load_image(avatar_path);
 		free(avatar_path);
-
-		if (!img)
-			continue;
-
-		auto a = tmalloc(struct fb, 1);
-		a->height = y;
-		a->width = x;
-		a->pitch = XRGB8888;
-		a->pitch = x*4;
-		a->data = img;
-		ret[n-1].avatar = a;
 	}
 	if (cap != n)
 		ret = realloc(ret, n*sizeof(struct user));
