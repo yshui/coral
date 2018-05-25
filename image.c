@@ -17,9 +17,16 @@ struct fb *load_image(const char *filename) {
 	auto a = tmalloc(struct fb, 1);
 	a->height = y;
 	a->width = x;
-	a->pitch = XRGB8888;
-	a->pitch = x*4;
+	a->pixfmt = XRGB8888;
+	a->pitch = x*pixfmt_bpp(a->pixfmt);
 	a->data = img;
+
+	// Premultiply alpha channel
+	for(int32_t i = 0; i < a->height*a->width; i++) {
+		a->data[i*4] *= a->data[i*4+3]/255.0;
+		a->data[i*4+1] *= a->data[i*4+3]/255.0;
+		a->data[i*4+2] *= a->data[i*4+3]/255.0;
+	}
 
 	return a;
 }
