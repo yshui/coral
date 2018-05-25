@@ -75,7 +75,7 @@ void mouse_move_rel_cb(int dx, int dy, void *ud) {
 }
 
 int main() {
-	struct config cfg;
+	struct config cfg = {0};
 	load_config(&cfg);
 	cfg.im = interpolate_man_new();
 
@@ -93,8 +93,11 @@ int main() {
 	if (!cfg.b)
 		return 1;
 
-	if (cfg.cursor)
-		cfg.bops->set_cursor(cfg.b, cfg.cursor);
+	if (!cfg.cursor) {
+		cfg.cursor = new_fb(32, 32, ARGB8888);
+		memset(cfg.cursor->data, 255, cfg.cursor->pitch*cfg.cursor->height);
+	}
+	cfg.bops->set_cursor(cfg.b, cfg.cursor);
 
 	cfg.s = build_scene(cfg.im, users, nusers, cfg.b->w, cfg.b->h);
 	if (!cfg.s)

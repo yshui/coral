@@ -6,6 +6,8 @@
 #include <string.h>
 #include <stddef.h>
 #include <limits.h>
+
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include <stb/stb_image_resize.h>
 #include "common.h"
 #include "list.h"
@@ -88,6 +90,28 @@ void blit(const struct fb *bottom, const struct fb *top,
 	}
 }
 
+static inline void
+pixel(struct fb *fb, uint32_t x, uint32_t y, struct color c) {
+	uint32_t off = x*fb->pitch+y*pixfmt_bpp(fb->pixfmt);
+	fb->data[off] = c.b*c.a/255.0;
+	fb->data[off+1] = c.g*c.a/255.0;
+	fb->data[off+2] = c.r*c.a/255.0;
+	fb->data[off+3] = c.a;
+}
+
+static inline void
+xline(struct fb *fb, uint32_t x1, uint32_t x2, uint32_t y,
+      struct color c) {
+	while (x1 <= x2) pixel(fb, x1++, y, c);
+}
+
+static inline void
+yline(struct fb *fb, uint32_t x, uint32_t y1, uint32_t y2,
+      struct color c) {
+	while (y1 <= y2) pixel(fb, x, y1++, c);
+}
+
+
 void render_object(struct object *obj, bool force) {
 	bool need_rerender = false;
 	if (C(obj->w) || C(obj->h)) {
@@ -105,7 +129,7 @@ void render_object(struct object *obj, bool force) {
 			obj->fb.width = V(obj->w);
 			obj->fb.pitch = obj->fb.width*pixfmt_bpp(obj->fb.pixfmt);
 			obj->fb.height = V(obj->h);
-			obj->fb.data = malloc(obj->fb.height*obj->fb.pitch);
+			obj->fb.data = calloc(obj->fb.height*obj->fb.pitch, 1);
 		}
 		obj->render(obj);
 	}
@@ -156,6 +180,62 @@ static void render_rect(struct object *_o) {
 	}
 }
 
+struct circle {
+	struct object base;
+	var *thickness;
+	var *r, *g, *b, *a;
+};
+
+static void render_circle(struct object *o) {
+	struct circle *ci = (void *)o;
+	struct fb *fb = &o->fb;
+	int th = V(ci->thickness);
+	int ro = fminf(V(o->w), V(o->h))/2.0-1;
+	int xo = ro;
+	int xi = ro-th;
+	int y = 0;
+	int erro = 1 - xo;
+	int erri = 1 - xi;
+
+	struct color c = {
+		.r = color_clamp(V(ci->r)),
+		.g = color_clamp(V(ci->g)),
+		.b = color_clamp(V(ci->b)),
+		.a = color_clamp(V(ci->a))
+	};
+
+	while(xo >= y) {
+		xline(fb, ro+xi, ro+xo, ro+y,  c);
+		yline(fb, ro+y,  ro+xi, ro+xo, c);
+		xline(fb, ro-xo, ro-xi, ro+y,  c);
+		yline(fb, ro-y,  ro+xi, ro+xo, c);
+		xline(fb, ro-xo, ro-xi, ro-y,  c);
+		yline(fb, ro-y,  ro-xo, ro-xi, c);
+		xline(fb, ro+xi, ro+xo, ro-y,  c);
+		yline(fb, ro+y,  ro-xo, ro-xi, c);
+
+		y++;
+
+		if (erro < 0) {
+			erro += 2*y+1;
+		} else {
+			xo--;
+			erro += 2*(y-xo+1);
+		}
+
+		if (y > ro-th) {
+			xi = y;
+		} else {
+			if (erri < 0) {
+				erri += 2*y+1;
+			} else {
+				xi--;
+				erri += 2*(y-xi+1);
+			}
+		}
+	}
+}
+
 struct scale {
 	struct object base;
 	struct fb *fb;
@@ -193,6 +273,24 @@ struct object *new_rect(var *x, var *y, var *w, var *h, var *r, var *g, var *b, 
 	n->a = a;
 	n->base.render = render_rect;
 	return &n->base;
+}
+
+struct object *new_scale(var *x, var *y, var *w, var *h, struct fb *src) {
+	struct scale *s = (void *)new_obj(x, y, w, h, 0);
+	s->fb = src;
+	s->base.render = render_scale;
+	return &s->base;
+}
+
+struct object *new_circle(var *x, var *y, var *w, var *h, var *r, var *g, var *b, var *a, var *th) {
+	struct circle *c = (void *)new_obj(x, y, w, h, 5);
+	c->r = r;
+	c->g = g;
+	c->b = b;
+	c->a = a;
+	c->thickness = th;
+	c->base.render = render_circle;
+	return &c->base;
 }
 
 struct scene *new_scene(int nlayers) {

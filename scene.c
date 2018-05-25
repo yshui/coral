@@ -39,10 +39,13 @@ struct scene *build_scene(struct interpolate_man *im, struct user *user, size_t 
 	auto y4 = vADD(vNEG(y2), vC(w));
 	auto rect4 = new_rect(vC(h/2), y4, wv, wv, full, full, zero, full);
 
+	auto circle = new_circle(vC(h/2-125), vC(w/2-125), vC(250), vC(250), full, full, full, full, vC(1));
+
 	auto s = new_scene(1);
 	add_object_to_layer(rect, get_layer(s, 0));
 	add_object_to_layer(rect2, get_layer(s, 0));
 	add_object_to_layer(rect3, get_layer(s, 0));
 	add_object_to_layer(rect4, get_layer(s, 0));
+	add_object_to_layer(circle, get_layer(s, 0));
 	return s;
 }
