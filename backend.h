@@ -5,6 +5,7 @@
 #include <ev.h>
 
 struct fb;
+struct udev;
 struct backend {
 	bool busy; // indicates whether we could call queue_frame()
 	uint32_t w, h, cursor_w, cursor_h;
@@ -22,7 +23,7 @@ struct backend_ops {
 	// the requested width and height.
 	//
 	// Real width and height is stored into w and h
-	struct backend *(*setup)(EV_P, uint32_t w, uint32_t h);
+	struct backend *(*setup)(EV_P, struct udev *, uint32_t w, uint32_t h);
 
 	// Queue one frame, it shoud be submitted to output
 	// immediately, and page_flip_cb() should be called

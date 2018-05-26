@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <ev.h>
+struct udev;
 struct input {
 	void *user_data;
 	void (*mouse_move_rel_cb)(int dx, int dy, void *user_data);
@@ -11,7 +12,7 @@ struct input {
 };
 
 struct input_ops {
-	struct input *(*setup)(EV_P);
+	struct input *(*setup)(EV_P, struct udev *);
 	bool (*set_kb_layout)(struct input *, const char *layout);
 };
 

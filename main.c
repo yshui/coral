@@ -3,6 +3,8 @@
 #include <ev.h>
 #include <unistd.h>
 #include <ini.h>
+#include <libudev.h>
+#include "font.h"
 #include "user.h"
 #include "scene.h"
 #include "common.h"
@@ -18,6 +20,7 @@ struct config {
 	struct interpolate_man *im;
 	struct scene *s;
 	struct input *i;
+	struct font *f;
 	uint32_t cursor_x, cursor_y;
 	struct fb *cursor;
 
@@ -78,20 +81,31 @@ int main() {
 	struct config cfg = {0};
 	load_config(&cfg);
 	cfg.im = interpolate_man_new();
+	cfg.f = init_font();
+	if (!cfg.f) {
+		fprintf(stderr, "Could not initialize font\n");
+		return -1;
+	}
+
+	auto u = udev_new();
+	if (!u) {
+		fprintf(stderr, "Could not initialize udev\n");
+		return -1;
+	}
 
 	size_t nusers;
 	auto users = load_users(&nusers);
 
-	cfg.i = libinput_ops.setup(EV_DEFAULT);
+	cfg.i = libinput_ops.setup(EV_DEFAULT, u);
 	cfg.i->user_data = &cfg;
 	cfg.i->mouse_button_cb = mouse_button_cb;
 	cfg.i->mouse_move_rel_cb = mouse_move_rel_cb;
 
 	cfg.bops = &drm_ops;
 	// w, h is ignored right now. Do we really need that?
-	cfg.b = cfg.bops->setup(EV_DEFAULT, 0, 0);
+	cfg.b = cfg.bops->setup(EV_DEFAULT, u, 0, 0);
 	if (!cfg.b)
-		return 1;
+		return -1;
 
 	if (!cfg.cursor) {
 		cfg.cursor = new_fb(32, 32, ARGB8888);

@@ -57,8 +57,7 @@ static void input_cb(EV_P_ ev_io *_w, int revent) {
 	libinput_dispatch(w->libinput);
 	process_events(w);
 }
-struct input *setup_libinput(EV_P) {
-	auto u = udev_new();
+struct input *setup_libinput(EV_P, struct udev *u) {
 	auto li = libinput_udev_create_context(
 	    (struct libinput_interface[]){{open_restricted, close_restricted}}, NULL, u);
 	libinput_udev_assign_seat(li, "seat0");

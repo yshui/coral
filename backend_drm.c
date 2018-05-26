@@ -5,11 +5,21 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <ev.h>
+#include <libudev.h>
 #include <assert.h>
 #include <sys/mman.h>
 #include "common.h"
 #include "backend.h"
 #include "render.h"
+
+#define ERET(expr) do { \
+	__auto_type ret = (expr); \
+	if (ret < 0) {\
+		fprintf(stderr, # expr " has failed\n"); \
+		goto err_out; \
+	} \
+} while(0)
+
 struct fb_params {
 	size_t pitch;
 	size_t size;
@@ -86,7 +96,23 @@ static inline int atomic_commit(drmModeAtomicReqPtr atomic, int fd, void *ud) {
 	uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
 	return drmModeAtomicCommit(fd, atomic, flags, ud);
 }
-static inline drmModeCrtcPtr find_crtc(int fd, uint32_t w, uint32_t h) {
+
+static inline bool is_card(struct udev_device *ud) {
+	const char *name = udev_device_get_sysname(ud);
+	if (!name)
+		return false;
+	fprintf(stderr, "sysname %s\n", name);
+	if (strncmp(name, "card", 4) || !name[4])
+		return false;
+
+	char *end;
+	int num = strtol(name+4, &end, 10);
+	if (num < 0 || *end)
+		return false;
+
+	return true;
+}
+static inline drmModeCrtcPtr find_crtc_for_device(int fd, uint32_t w, uint32_t h) {
 	auto r = drmModeGetResources(fd);
 	if (!r)
 		return NULL;
@@ -109,6 +135,77 @@ static inline drmModeCrtcPtr find_crtc(int fd, uint32_t w, uint32_t h) {
 
 	drmModeFreeResources(r);
 	return ret;
+
+}
+static inline drmModeCrtcPtr find_device_and_crtc(struct udev *u, int *out_fd, uint32_t w, uint32_t h) {
+	int fd = -1;
+	*out_fd = -1;
+
+	auto ue = udev_enumerate_new(u);
+	if (!ue)
+		return NULL;
+	ERET(udev_enumerate_add_match_subsystem(ue, "drm"));
+	ERET(udev_enumerate_scan_devices(ue));
+	auto ule = udev_enumerate_get_list_entry(ue);
+	while (ule) {
+		__label__ next_device;
+		struct udev_device *ud = NULL;
+		const char *syspath = udev_list_entry_get_name(ule);
+		fprintf(stderr, "%s\n", syspath);
+		ud = udev_device_new_from_syspath(u, syspath);
+		if (!is_card(ud))
+			goto next_device;
+
+		const char *devnode = udev_device_get_devnode(ud);
+		fd = open(devnode, O_RDWR | O_CLOEXEC);
+		fprintf(stderr, "%s %d\n", devnode, fd);
+		if (fd < 0) {
+			fprintf(stderr, "Could not open the %s\n", devnode);
+			goto next_device;
+		}
+
+		// Check if we can get master
+		if (drmDropMaster(fd) < 0 || drmSetMaster(fd) < 0) {
+			fprintf(stderr, "Could not take drm master of %s\n", devnode);
+			//goto next_device;
+		}
+
+		// Check if atomic is supported
+		if (drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1) < 0) {
+			fprintf(stderr, "%s doesn't support atomic modesetting\n", devnode);
+			goto next_device;
+		}
+
+		// Check if dumb buffer is supported
+		uint64_t tmp = 1;
+		if (drmGetCap(fd, DRM_CAP_DUMB_BUFFER, &tmp) < 0 || tmp == 0) {
+			fprintf(stderr, "%s doesn't support creating dumb buffer\n", devnode);
+			goto next_device;
+		}
+
+		drmModeCrtcPtr ret = find_crtc_for_device(fd, w, h);
+		if (ret != NULL) {
+			// We found a usable device!
+			fprintf(stderr, "Chosen drm device %s\n", devnode);
+			udev_device_unref(ud);
+			udev_enumerate_unref(ue);
+			*out_fd = fd;
+			return ret;
+		}
+		fprintf(stderr, "No suitable crtc found for %s\n", devnode);
+
+	next_device:
+		if (fd >= 0) {
+			drmDropMaster(fd);
+			close(fd);
+		}
+		if (ud)
+			udev_device_unref(ud);
+		ule = udev_list_entry_get_next(ule);
+	}
+err_out:
+	udev_enumerate_unref(ue);
+	return NULL;
 }
 
 static inline void init_plane_props(int fd, struct plane *p) {
@@ -237,21 +334,15 @@ static void drm_callback(EV_P_ ev_io *iow, int revent) {
 	ev.page_flip_handler = drm_page_flip_handler;
 	drmHandleEvent(iow->fd, &ev);
 }
-struct backend *drm_setup(EV_P_ uint32_t w, uint32_t h) {
-#define ERET(expr) do { \
-	__auto_type ret = (expr); \
-	if (ret) {\
-		fprintf(stderr, # expr " has failed\n"); \
-		goto err_out; \
-	} \
-} while(0)
+struct backend *drm_setup(EV_P_ struct udev *u, uint32_t w, uint32_t h) {
 
 	struct drm_backend *b = tmalloc(struct drm_backend, 1);
 	drmModeAtomicReqPtr atomic = NULL;
 
 	// TODO iterate over cards
-	int fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
-	if (fd < 0)
+	int fd;
+	b->crtc = find_device_and_crtc(u, &fd, w, h);
+	if (fd < 0 || b->crtc == NULL)
 		return NULL;
 
 	drmDropMaster(fd);
@@ -263,7 +354,6 @@ struct backend *drm_setup(EV_P_ uint32_t w, uint32_t h) {
 	if (tmp == 0)
 		goto err_out;
 
-	b->crtc = find_crtc(fd, w, h);
 	b->base.w = b->crtc->width;
 	b->base.h = b->crtc->height;
 	b->EV_A = EV_A;
@@ -301,8 +391,10 @@ err_out:
 	if (atomic)
 		drmModeAtomicFree(atomic);
 	free(b);
-	drmDropMaster(fd);
-	close(fd);
+	if (fd >= 0) {
+		drmDropMaster(fd);
+		close(fd);
+	}
 	return NULL;
 }
 
@@ -341,7 +433,6 @@ err_out:
 	if (atomic)
 		drmModeAtomicFree(atomic);
 	return -3;
-#undef ERET
 }
 
 static bool
