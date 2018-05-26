@@ -8,6 +8,7 @@
 #include <libudev.h>
 #include <assert.h>
 #include <sys/mman.h>
+#include <errno.h>
 #include "common.h"
 #include "backend.h"
 #include "render.h"
@@ -165,14 +166,23 @@ static inline drmModeCrtcPtr find_device_and_crtc(struct udev *u, int *out_fd, u
 		}
 
 		// Check if we can get master
-		if (drmDropMaster(fd) < 0 || drmSetMaster(fd) < 0) {
-			fprintf(stderr, "Could not take drm master of %s\n", devnode);
-			//goto next_device;
-		}
+		if (drmDropMaster(fd) < 0 || drmSetMaster(fd) < 0)
+			fprintf(stderr, "Could not take drm master of %s, "
+			        "fine if we are the only client\n", devnode);
 
 		// Check if atomic is supported
 		if (drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1) < 0) {
 			fprintf(stderr, "%s doesn't support atomic modesetting\n", devnode);
+			goto next_device;
+		}
+
+		// Check if atomic modesetting actually works
+		struct drm_mode_atomic atomic = {0};
+		atomic.flags = DRM_MODE_ATOMIC_TEST_ONLY;
+		errno = 0;
+		int err = drmIoctl(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
+		if (err != 0) {
+			fprintf(stderr, "Could not do atomic modesetting on %s: %s\n", devnode, strerror(errno));
 			goto next_device;
 		}
 
