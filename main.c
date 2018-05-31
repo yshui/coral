@@ -21,7 +21,6 @@ struct config {
 	struct scene *s;
 	struct input *i;
 	struct font *f;
-	uint32_t cursor_x, cursor_y;
 	struct fb *cursor;
 
 	double last_timestamp;
@@ -50,31 +49,21 @@ void render_callback(EV_P_ void *user_data) {
 		ev_break(EV_A_ EVBREAK_ALL);
 	interpolate_man_advance(c->im, ev_now(EV_A)-c->last_timestamp);
 	c->last_timestamp = ev_now(EV_A);
-	render_scene(fb, c->s, false);
+	render_scene(fb, c->s);
 	//fprintf(stderr, "queue frame\n");
-	c->bops->queue_frame(c->b, fb, c->cursor_x, c->cursor_y);
+
+	uint32_t x, y;
+	libinput_ops.pointer_coord(c->i, &x, &y);
+	c->bops->queue_frame(c->b, fb, x, y);
 }
 
-void mouse_button_cb(int button, bool pressed, void *ud) {
+void mouse_button_cb(int button, uint16_t state, bool pressed, void *ud) {
 
 }
 
-void mouse_move_rel_cb(int dx, int dy, void *ud) {
+void mouse_move_cb(uint32_t x, uint32_t y, void *ud) {
 	struct config *c = ud;
-	if (dx < 0 && c->cursor_x < -dx)
-		c->cursor_x = 0;
-	else if (dx > 0 && c->b->w-c->cursor_x < dx)
-		c->cursor_x = c->b->w;
-	else
-		c->cursor_x += dx;
-
-	if (dy < 0 && c->cursor_y < -dy)
-		c->cursor_y = 0;
-	else if (dy > 0 && c->b->h-c->cursor_y < dy)
-		c->cursor_y = c->b->h;
-	else
-		c->cursor_y += dy;
-	fprintf(stderr, "%d %d %d %d\n", dx, dy, c->cursor_x, c->cursor_y);
+	handle_mouse_move(c->s, x, y);
 }
 
 int main() {
@@ -82,6 +71,7 @@ int main() {
 	load_config(&cfg);
 	cfg.im = interpolate_man_new();
 	cfg.f = init_font();
+	load_font(cfg.f, "Helvetica Neue Regular");
 	if (!cfg.f) {
 		fprintf(stderr, "Could not initialize font\n");
 		return -1;
@@ -96,16 +86,16 @@ int main() {
 	size_t nusers;
 	auto users = load_users(&nusers);
 
-	cfg.i = libinput_ops.setup(EV_DEFAULT, u);
-	cfg.i->user_data = &cfg;
-	cfg.i->mouse_button_cb = mouse_button_cb;
-	cfg.i->mouse_move_rel_cb = mouse_move_rel_cb;
-
 	cfg.bops = &drm_ops;
 	// w, h is ignored right now. Do we really need that?
 	cfg.b = cfg.bops->setup(EV_DEFAULT, u, 0, 0);
 	if (!cfg.b)
 		return -1;
+
+	cfg.i = libinput_ops.setup(EV_DEFAULT, u, cfg.b->w, cfg.b->h);
+	cfg.i->user_data = &cfg;
+	cfg.i->mouse_button_cb = mouse_button_cb;
+	cfg.i->mouse_move_cb = mouse_move_cb;
 
 	if (!cfg.cursor) {
 		cfg.cursor = new_fb(32, 32, ARGB8888);
@@ -125,8 +115,11 @@ int main() {
 	if (!fb)
 		return 1;
 	cfg.last_timestamp = ev_now(EV_DEFAULT);
-	render_scene(fb, cfg.s, true);
-	cfg.bops->queue_frame(cfg.b, fb, cfg.cursor_x, cfg.cursor_y);
+	render_scene(fb, cfg.s);
+
+	uint32_t x, y;
+	libinput_ops.pointer_coord(cfg.i, &x, &y);
+	cfg.bops->queue_frame(cfg.b, fb, x, y);
 	ev_run(EV_DEFAULT, 0);
 
 	return 0;

@@ -11,28 +11,7 @@
 #include <stb/stb_image_resize.h>
 #include "common.h"
 #include "list.h"
-#include "interpolate.h"
-#include "render.h"
-
-struct object {
-	struct list_head siblings;
-	void (*render)(struct object *);
-	var *x, *y, *w, *h;
-	struct fb fb;
-
-	int nparams;
-	var *param[0];
-};
-
-struct layer {
-	struct fb *cache;
-	struct list_head objs;
-};
-
-struct scene {
-	int nlayers;
-	struct layer layer[0];
-};
+#include "object.h"
 
 void blit(const struct fb *bottom, const struct fb *top,
 	  int32_t x, int32_t y) {
@@ -112,8 +91,12 @@ yline(struct fb *fb, uint32_t x, uint32_t y1, uint32_t y2,
 }
 
 
-void render_object(struct object *obj, bool force) {
-	bool need_rerender = false;
+void render_object(struct object *obj) {
+	bool need_rerender = obj->need_render;
+	if (!obj->render) {
+		assert(obj->fb.data == NULL);
+		return;
+	}
 	if (C(obj->w) || C(obj->h)) {
 		need_rerender = true;
 		free(obj->fb.data);
@@ -124,7 +107,7 @@ void render_object(struct object *obj, bool force) {
 			need_rerender = true;
 			break;
 		}
-	if (force || need_rerender) {
+	if (need_rerender) {
 		if (!obj->fb.data) {
 			obj->fb.width = V(obj->w);
 			obj->fb.pitch = obj->fb.width*pixfmt_bpp(obj->fb.pixfmt);
@@ -132,21 +115,19 @@ void render_object(struct object *obj, bool force) {
 			obj->fb.data = calloc(obj->fb.height*obj->fb.pitch, 1);
 		}
 		obj->render(obj);
+		obj->need_render = false;
 	}
 }
 
-void render_scene(struct fb *fb, struct scene *s, bool force) {
+void render_scene(struct fb *fb, struct scene *s) {
 	for (int i = 0; i < s->nlayers; i++) {
 		struct object *o;
-		list_for_each_entry(o, &s->layer[i].objs, siblings) {
-			render_object(o, force);
-			blit(fb, &o->fb, V(o->x), V(o->y));
+		list_for_each_entry(o, &s->layer[i], siblings) {
+			render_object(o);
+			if (o->fb.data)
+				blit(fb, &o->fb, V(o->x), V(o->y));
 		}
 	}
-}
-
-void add_object_to_layer(struct object *o, struct layer *l) {
-	list_add(&o->siblings, &l->objs);
 }
 
 struct rect {
@@ -182,11 +163,12 @@ static void render_rect(struct object *_o) {
 
 struct circle {
 	struct object base;
-	var *thickness;
 	var *r, *g, *b, *a;
+	var *thickness;
 };
 
 static void render_circle(struct object *o) {
+	fprintf(stderr, "render circle\n");
 	struct circle *ci = (void *)o;
 	struct fb *fb = &o->fb;
 	int th = V(ci->thickness);
@@ -249,10 +231,6 @@ static void render_scale(struct object *_o) {
 	                           STBIR_FILTER_DEFAULT, STBIR_COLORSPACE_LINEAR, NULL);
 }
 
-void set_obj_pixfmt(struct object *o, uint8_t pixfmt) {
-	o->fb.pixfmt = pixfmt;
-}
-
 struct object *new_obj(var *x, var *y, var *w, var *h, int nparams) {
 	struct object *ret = calloc(1, sizeof(struct object)+sizeof(var*)*nparams);
 	ret->x = x;
@@ -260,8 +238,15 @@ struct object *new_obj(var *x, var *y, var *w, var *h, int nparams) {
 	ret->w = w;
 	ret->h = h;
 	ret->fb.pixfmt = XRGB8888;
+	ret->need_render = true;
 
 	ret->nparams = nparams;
+	return ret;
+}
+
+struct object *new_ghost(var *x, var *y, var *w, var *h, void *ud) {
+	auto ret = new_obj(x, y, w, h, 0);
+	ret->user_data = ud;
 	return ret;
 }
 
@@ -293,18 +278,6 @@ struct object *new_circle(var *x, var *y, var *w, var *h, var *r, var *g, var *b
 	return &c->base;
 }
 
-struct scene *new_scene(int nlayers) {
-	struct scene *ret = calloc(1, sizeof(struct scene)+sizeof(struct layer)*nlayers);
-	ret->nlayers = nlayers;
-	for (int i = 0; i < nlayers; i++)
-		INIT_LIST_HEAD(&ret->layer[i].objs);
-	return ret;
-}
-
-struct layer *get_layer(struct scene *s, int n) {
-	 return &s->layer[n];
-}
-
 var **get_object_params(struct object *obj, int *nparams) {
 	*nparams = obj->nparams;
 	return obj->param;
@@ -315,4 +288,8 @@ struct fb *new_similar_fb(const struct fb *old) {
 	*ret = *old;
 	ret->data = calloc(ret->pitch, ret->height);
 	return ret;
+}
+
+void add_object_to_layer(struct object *o, struct list_head *l) {
+	list_add(&o->siblings, l);
 }
