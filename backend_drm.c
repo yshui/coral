@@ -427,8 +427,11 @@ drm_queue_frame(struct backend *_b, struct fb *fb,
 	auto atomic = atomic_begin();
 	atomic_add(atomic, b->plane[0].id, b->plane[0].pid.fb_id, b->fb[b->front].fb);
 	atomic_add(atomic, b->plane[0].id, b->plane[0].pid.crtc_id, b->crtc->crtc_id);
-	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.crtc_x, cursor_x);
-	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.crtc_y, cursor_y);
+
+	// cursor_x,y is in internal coord, where x is the row, y is the col.
+	// crtc_x,y is in drm coord, where x is the horiz axis, y is the vert
+	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.crtc_x, cursor_y);
+	atomic_add(atomic, b->plane[1].id, b->plane[1].pid.crtc_y, cursor_x);
 	ERET(atomic_check(atomic, b->fd));
 	ERET(atomic_commit(atomic, b->fd, b));
 	drmModeAtomicFree(atomic);

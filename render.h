@@ -5,6 +5,7 @@
 #include "common.h"
 
 struct var;
+struct list_head;
 typedef struct var var;
 // Pixel format is assumed to be XRGB/ARGB8888 (high bytes to low bytes)
 
@@ -26,15 +27,15 @@ struct fb {
 	enum pixfmt pixfmt;
 };
 
+#define POS_PARAMS var *x, var *y, var *w, var *h
+
 struct scene;
 struct object;
-struct layer;
-void render_scene(struct fb *, struct scene *, bool force);
-struct object *new_rect(var *x, var *y, var *w, var *h, var *r, var *g, var *b, var *a);
-struct object *new_circle(var *x, var *y, var *w, var *h, var *r, var *g, var *b, var *a, var *thickness);
-void add_object_to_layer(struct object *o, struct layer *l);
-void set_object_parent(struct object *, struct object *parent);
-struct layer *get_layer(struct scene *s, int n);
+void render_scene(struct fb *, struct scene *);
+struct object *new_rect(POS_PARAMS, var *r, var *g, var *b, var *a);
+struct object *new_circle(POS_PARAMS, var *r, var *g, var *b, var *a, var *thickness);
+struct object *new_ghost(POS_PARAMS, void *ud);
+struct object *new_scale(POS_PARAMS, struct fb *src);
 struct scene *new_scene(int nlayers);
 struct fb* new_similar_fb(const struct fb *old);
 
