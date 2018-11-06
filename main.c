@@ -69,6 +69,7 @@ int main() {
 	load_config(&cfg);
 	cfg.im = interpolate_man_new();
 	cfg.f = init_font();
+	load_font(cfg.f, "Helvetica Neue Regular");
 	if (!cfg.f) {
 		fprintf(stderr, "Could not initialize font\n");
 		return -1;
