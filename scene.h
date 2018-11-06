@@ -1,10 +1,10 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
-struct interpolate_man;
+struct time_var;
 struct user;
 struct scene;
-struct scene *build_scene(struct interpolate_man *, struct user *, size_t nusers, uint32_t, uint32_t);
+struct scene *build_scene(struct time_var *, struct user *, size_t nusers, uint32_t, uint32_t);
 
 // x -> x-th scanline from top, y -> y-th pixel from left
 void handle_mouse_move(struct scene *, uint32_t x, uint32_t y);

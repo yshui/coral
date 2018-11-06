@@ -5,13 +5,17 @@
 struct var;
 struct key_frame *k;
 struct var_ops {
-	double (*current)(struct var *i);
+	/// What is the current value of the var.
+	double (*val)(struct var *i);
+
+	/// (If the var is time dependent), has the value of the
+	/// var changed since the last time we called `val`.
+	/// False positive is allowed. False negative is not.
+	/// Optional
 	bool (*changed)(struct var *i);
-	void (*advance)(struct var *i, double dt);
 };
 
 struct var {
-	struct list_head siblings;
 	const struct var_ops *ops;
 };
 
@@ -26,13 +30,15 @@ enum op {
 typedef struct var var;
 struct keyed_var;
 typedef struct keyed_var keyed;
-struct interpolate_man;
+
+struct time_var {
+	struct var base;
+	double current;
+};
+
 typedef void (*key_cb)(keyed *v, struct key_frame *k, bool finished, void *ud);
 
-void interpolate_man_advance(struct interpolate_man *, double);
-struct interpolate_man *interpolate_man_new(void);
-void interpolate_man_register(struct interpolate_man *, var *);
-var *new_keyed(struct interpolate_man *im, double val);
+var *new_keyed(struct time_var *, double val);
 var *new_const(double val);
 var *new_arith(enum op op, var *lhs, var *rhs);
 void keyed_new_linear_key(keyed *v, double set, double etc, key_cb cb, void *ud);
@@ -45,8 +51,22 @@ void keyed_new_quadratic_key(keyed *v, double set, double etc, key_cb cb, void *
 extern const struct var_ops keyed_var_ops;
 extern const struct var_ops const_var_ops;
 extern const struct var_ops arith_var_ops;
+extern const struct var_ops time_var_ops;
 
-#define V(x) ((x)->ops->current(x))
-#define C(x) ((x)->ops->changed ? (x)->ops->changed(x) : false)
+static inline double var_val(var *x) {
+	return x->ops->val(x);
+}
+
+static inline bool var_changed(var *x) {
+	return (x->ops->changed ? x->ops->changed(x) : false);
+}
+
+static inline struct time_var new_time(double now) {
+	return (struct time_var) {
+		.base = { .ops = &time_var_ops },
+		.current = now,
+	};
+}
+
 #define VK(x) (keyed_var_ops.current(x))
 #define CK(x) (keyed_var_ops.changed(x))

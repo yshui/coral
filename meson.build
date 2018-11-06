@@ -8,7 +8,7 @@ m = cc.find_library('m', required: true)
 fc = dependency('fontconfig', required: true)
 ft = dependency('freetype2', required: true)
 
-dm_src = ['main.c', 'scene.c', 'input.c', 'interpolate.c', 'render.c',
+dm_src = ['main.c', 'scene.c', 'input.c', 'var.c', 'render.c',
           'backend_drm.c', 'user.c', 'image.c', 'inih/ini.c', 'font.c']
 executable('dm', dm_src,
            dependencies: [drm, libinput, udev, libev, m, fc, ft],

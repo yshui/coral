@@ -30,13 +30,13 @@ struct scene *new_scene(int nlayers) {
 		INIT_LIST_HEAD(&ret->layer[i]);
 	return ret;
 }
-struct scene *build_scene(struct interpolate_man *im, struct user *user, size_t nusers, uint32_t w, uint32_t h) {
+struct scene *build_scene(struct time_var *t, struct user *user, size_t nusers, uint32_t w, uint32_t h) {
 	for (int i = 0; i < nusers; i++)
 		fprintf(stderr, "user: %s\n", user[i].name);
 	auto scfg = tmalloc(struct scene_config, 1);
 	scfg->w = w;
 	scfg->h = h;
-	auto x = new_keyed(im, h/2);
+	auto x = new_keyed(t, h/2);
 	keyed_new_quadratic_key((void *)x, -80, 3, move_rect_0_cb, scfg);
 	auto wv = vC(20);
 	auto full = vC(255);
@@ -87,9 +87,9 @@ struct object *get_object_at(struct scene *s, uint32_t x, uint32_t y) {
 	for (int i = s->nlayers-1; i >= 0; i--) {
 		struct object *o;
 		list_for_each_entry_reverse(o, &s->layer[i], siblings) {
-			if (V(o->x) <= x && V(o->y) <= y &&
-			    V(o->x)+V(o->h) > x &&
-			    V(o->y)+V(o->w) > y)
+			if (var_val(o->x) <= x && var_val(o->y) <= y &&
+			    var_val(o->x)+var_val(o->h) > x &&
+			    var_val(o->y)+var_val(o->w) > y)
 				return o;
 		}
 	}

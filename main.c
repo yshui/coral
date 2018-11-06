@@ -12,19 +12,16 @@
 #include "render.h"
 #include "image.h"
 #include "input.h"
-#include "interpolate.h"
+#include "var.h"
 
 struct config {
 	struct backend *b;
 	const struct backend_ops *bops;
-	struct interpolate_man *im;
+	struct time_var *t;
 	struct scene *s;
 	struct input *i;
 	struct font *f;
-	uint32_t cursor_x, cursor_y;
 	struct fb *cursor;
-
-	double last_timestamp;
 };
 
 int coral_ini_handler(void *ud, const char *section, const char *name, const char *value) {
@@ -48,11 +45,13 @@ void render_callback(EV_P_ void *user_data) {
 	struct fb *fb = c->bops->new_fb(c->b, RENDER_FB);
 	if (!fb)
 		ev_break(EV_A_ EVBREAK_ALL);
-	interpolate_man_advance(c->im, ev_now(EV_A)-c->last_timestamp);
-	c->last_timestamp = ev_now(EV_A);
+	c->t->current = ev_now(EV_A);
 	render_scene(fb, c->s);
-	//fprintf(stderr, "queue frame\n");
-	c->bops->queue_frame(c->b, fb, c->cursor_x, c->cursor_y);
+	fprintf(stderr, "queue frame %f\n", c->t->current);
+
+	uint32_t x, y;
+	libinput_ops.pointer_coord(c->i, &x, &y);
+	c->bops->queue_frame(c->b, fb, x, y);
 }
 
 void mouse_button_cb(int button, uint16_t state, bool pressed, void *ud) {
@@ -67,7 +66,6 @@ void mouse_move_cb(uint32_t x, uint32_t y, void *ud) {
 int main() {
 	struct config cfg = {0};
 	load_config(&cfg);
-	cfg.im = interpolate_man_new();
 	cfg.f = init_font();
 	load_font(cfg.f, "Helvetica Neue Regular");
 	if (!cfg.f) {
@@ -101,19 +99,21 @@ int main() {
 	}
 	cfg.bops->set_cursor(cfg.b, cfg.cursor);
 
-	cfg.s = build_scene(cfg.im, users, nusers, cfg.b->w, cfg.b->h);
+	printf("%f\n", ev_now(EV_DEFAULT));
+	auto time = new_time(ev_now(EV_DEFAULT));
+	cfg.t = &time;
+	cfg.s = build_scene(&time, users, nusers, cfg.b->w, cfg.b->h);
 	if (!cfg.s)
 		return 1;
 	cfg.b->user_data = &cfg;
 	cfg.b->page_flip_cb = render_callback;
-	cfg.last_timestamp = ev_now(EV_DEFAULT);
 
 	// Render first frame
 	struct fb *fb = cfg.bops->new_fb(cfg.b, RENDER_FB);
 	if (!fb)
 		return 1;
-	cfg.last_timestamp = ev_now(EV_DEFAULT);
 	render_scene(fb, cfg.s);
+	printf("First scene\n");
 
 	uint32_t x, y;
 	libinput_ops.pointer_coord(cfg.i, &x, &y);

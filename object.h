@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
-#include "interpolate.h"
+#include "var.h"
 #include "render.h"
 #include "list.h"
 

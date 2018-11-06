@@ -11,7 +11,6 @@
 #include <stb/stb_image_resize.h>
 #include "common.h"
 #include "list.h"
-#include "interpolate.h"
 #include "object.h"
 
 void blit(const struct fb *bottom, const struct fb *top,
@@ -98,21 +97,21 @@ void render_object(struct object *obj) {
 		assert(obj->fb.data == NULL);
 		return;
 	}
-	if (C(obj->w) || C(obj->h)) {
+	if (var_changed(obj->w) || var_changed(obj->h)) {
 		need_rerender = true;
 		free(obj->fb.data);
 		obj->fb.data = NULL;
 	}
 	for (int i = 0; i < obj->nparams; i++)
-		if (C(obj->param[i])) {
+		if (var_changed(obj->param[i])) {
 			need_rerender = true;
 			break;
 		}
 	if (need_rerender) {
 		if (!obj->fb.data) {
-			obj->fb.width = V(obj->w);
+			obj->fb.width = var_val(obj->w);
 			obj->fb.pitch = obj->fb.width*pixfmt_bpp(obj->fb.pixfmt);
-			obj->fb.height = V(obj->h);
+			obj->fb.height = var_val(obj->h);
 			obj->fb.data = calloc(obj->fb.height*obj->fb.pitch, 1);
 		}
 		obj->render(obj);
@@ -126,7 +125,7 @@ void render_scene(struct fb *fb, struct scene *s) {
 		list_for_each_entry(o, &s->layer[i], siblings) {
 			render_object(o);
 			if (o->fb.data)
-				blit(fb, &o->fb, V(o->x), V(o->y));
+				blit(fb, &o->fb, var_val(o->x), var_val(o->y));
 		}
 	}
 }
@@ -144,16 +143,16 @@ static inline double color_clamp(double in) {
 
 static void render_rect(struct object *_o) {
 	struct rect *o = (void *)_o;
-	double r = color_clamp(V(o->r)),
-	       g = color_clamp(V(o->g)),
-	       b = color_clamp(V(o->b)),
-	       a = color_clamp(V(o->a));
+	double r = color_clamp(var_val(o->r)),
+	       g = color_clamp(var_val(o->g)),
+	       b = color_clamp(var_val(o->b)),
+	       a = color_clamp(var_val(o->a));
 
 	uint8_t *data = o->base.fb.data;
 
-	for (uint32_t i = 0; i < V(o->base.h); i++) {
+	for (uint32_t i = 0; i < var_val(o->base.h); i++) {
 		uint32_t ba = i*_o->fb.pitch;
-		for (uint32_t j = 0; j < V(o->base.w); j++) {
+		for (uint32_t j = 0; j < var_val(o->base.w); j++) {
 			data[ba+j*4] = b*a/255.0;
 			data[ba+j*4+1] = g*a/255.0;
 			data[ba+j*4+2] = r*a/255.0;
@@ -169,10 +168,11 @@ struct circle {
 };
 
 static void render_circle(struct object *o) {
+	fprintf(stderr, "render circle\n");
 	struct circle *ci = (void *)o;
 	struct fb *fb = &o->fb;
-	int th = V(ci->thickness);
-	int ro = fminf(V(o->w), V(o->h))/2.0-1;
+	int th = var_val(ci->thickness);
+	int ro = fminf(var_val(o->w), var_val(o->h))/2.0-1;
 	int xo = ro;
 	int xi = ro-th;
 	int y = 0;
@@ -180,10 +180,10 @@ static void render_circle(struct object *o) {
 	int erri = 1 - xi;
 
 	struct color c = {
-		.r = color_clamp(V(ci->r)),
-		.g = color_clamp(V(ci->g)),
-		.b = color_clamp(V(ci->b)),
-		.a = color_clamp(V(ci->a))
+		.r = color_clamp(var_val(ci->r)),
+		.g = color_clamp(var_val(ci->g)),
+		.b = color_clamp(var_val(ci->b)),
+		.a = color_clamp(var_val(ci->a))
 	};
 
 	while(xo >= y) {
@@ -216,6 +216,7 @@ static void render_circle(struct object *o) {
 			}
 		}
 	}
+	fprintf(stderr, "render circle done\n");
 }
 
 struct scale {
