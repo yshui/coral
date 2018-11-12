@@ -7,6 +7,7 @@
 struct font {
 	FcConfig *fc;
 	FT_Library ft;
+	FT_Face face;
 	FcPattern *pat;
 };
 
@@ -32,14 +33,32 @@ int load_font(struct font *f, const char *pattern) {
 	if (!pat)
 		return -1;
 
-	auto os = FcObjectSetBuild(FC_INDEX, FC_STYLE, FC_HINTING, FC_AUTOHINT, FC_RGBA, FC_FILE, NULL);
-	auto fs = FcFontList(f->fc, pat, os);
+	FcConfigSubstitute(f->fc, pat, FcMatchPattern);
+	FcDefaultSubstitute(pat);
 
-	fprintf(stderr, "nfont %d\n", fs->nfont);
-	for (int i = 0; i < fs->nfont; i++) {
-		FcPatternPrint(fs->fonts[i]);
-		//FcPatternGetString(fs->fonts[i])
-	}
+	char* fontFile;
+	FcResult result;
+	// Use fontconfig to find the "best match"
+	FcPattern* font = FcFontMatch(f->fc, pat, &result);
+	FcPatternDestroy(pat);
+
+	if (!font)
+		return -1;
+
+	FcChar8* file = NULL;
+	if (FcPatternGetString(font, FC_FILE, 0, &file) != FcResultMatch)
+		return -1;
+	int index = 0;
+	if (FcPatternGetInteger(font, FC_INDEX, 0, &index) != FcResultMatch)
+		return -1;
+
+	// We found the font.
+	// This might be a fallback font, though
+	fontFile = (char*)file;
+	printf("%s\n",fontFile);
+
+	int err = FT_New_Face(f->ft, fontFile, index, &f->face);
+	printf("%d\n", err);
 
 	return 0;
 }

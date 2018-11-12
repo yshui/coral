@@ -67,7 +67,7 @@ int main() {
 	struct config cfg = {0};
 	load_config(&cfg);
 	cfg.f = init_font();
-	load_font(cfg.f, "Helvetica Neue Regular");
+	load_font(cfg.f, "sans");
 	if (!cfg.f) {
 		fprintf(stderr, "Could not initialize font\n");
 		return -1;
